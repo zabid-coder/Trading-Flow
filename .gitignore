@@ -1,0 +1,33 @@
+# dependencies
+node_modules/
+
+# build output
+dist/
+dist-ssr/
+
+# env & secrets — never commit webhook tokens or broker keys
+.env
+.env.*
+*.pem
+
+# logs
+*.log
+npm-debug.log*
+logs/
+
+# python side (FastAPI receiver / Streamlit monitor, if added to this repo)
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+trading_system.db
+trading_system.log
+
+# os / editor
+.DS_Store
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.local
+.next/
+build/
