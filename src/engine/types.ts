@@ -70,6 +70,7 @@ export interface Trade {
   slippage?: number;
   trailActive?: boolean;
   trailSl?: number;
+  trailStop?: number;
 }
 
 export interface EngineEvent {

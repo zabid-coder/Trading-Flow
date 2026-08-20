@@ -249,6 +249,42 @@ def place_order(order: OrderPayload, authorization: Optional[str] = Header(None)
         "tp": order.tp
     }
 
+@app.post("/report_sl")
+def report_sl(order_secret: Optional[str] = None, authorization: Optional[str] = Header(None)):
+    """Report a Stop Loss hit event to increment the daily discipline limit counter."""
+    verify_auth(order_secret, authorization)
+    today = datetime.utcnow().strftime("%Y-%m-%d")
+    with get_db() as conn:
+        conn.execute("""
+            INSERT INTO daily_limits (day, sl_hits)
+            VALUES (?, 1)
+            ON CONFLICT(day) DO UPDATE SET sl_hits = sl_hits + 1
+        """, (today,))
+        row = conn.execute("SELECT sl_hits FROM daily_limits WHERE day = ?", (today,)).fetchone()
+        sl_hits = row["sl_hits"] if row else 1
+
+    return {
+        "status": "recorded",
+        "day": today,
+        "sl_hits": sl_hits,
+        "max_daily_sl": MAX_DAILY_SL,
+        "halted": sl_hits >= MAX_DAILY_SL
+    }
+
+@app.get("/daily_status")
+def get_daily_status():
+    """Retrieve daily loss limits and remaining SL allowances."""
+    today = datetime.utcnow().strftime("%Y-%m-%d")
+    with get_db() as conn:
+        row = conn.execute("SELECT sl_hits FROM daily_limits WHERE day = ?", (today,)).fetchone()
+        sl_hits = row["sl_hits"] if row else 0
+    return {
+        "day": today,
+        "sl_hits": sl_hits,
+        "max_daily_sl": MAX_DAILY_SL,
+        "halted": sl_hits >= MAX_DAILY_SL
+    }
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)

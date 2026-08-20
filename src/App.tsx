@@ -430,6 +430,7 @@ function TerminalContent() {
         onSelectSymbol={selectSymbol}
         onSelectTimeframe={selectTimeframe}
         onToggleChartView={toggleChartView}
+        onToggleSound={() => patchCfg({ soundEnabled: !cfg.soundEnabled })}
         onOpenBrokerSettings={() => setBrokerModalOpen(true)}
         onOpenGuide={() => setGuideModalOpen(true)}
         tick={tick}

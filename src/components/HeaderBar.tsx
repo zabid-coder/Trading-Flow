@@ -21,6 +21,7 @@ interface Props {
   onSelectSymbol: (sym: string) => void;
   onSelectTimeframe: (tf: Timeframe) => void;
   onToggleChartView: () => void;
+  onToggleSound: () => void;
   onOpenBrokerSettings: () => void;
   onOpenGuide: () => void;
   tick: number;
@@ -38,6 +39,7 @@ export default function HeaderBar({
   onSelectSymbol,
   onSelectTimeframe,
   onToggleChartView,
+  onToggleSound,
   onOpenBrokerSettings,
   onOpenGuide,
   tick,
@@ -223,18 +225,14 @@ export default function HeaderBar({
 
         {/* Audio Mute Toggle */}
         <button
-          onClick={() => {
-            const next = !cfg.soundEnabled;
-            onToggleRun(); // momentary touch
-            onToggleRun();
-          }}
+          onClick={onToggleSound}
           className="flex items-center gap-1 rounded-md border px-2 py-1 text-[10.5px] font-bold transition-all hover:border-[var(--gold)]"
           style={{
             borderColor: "var(--line)",
             background: cfg.soundEnabled ? "rgba(47,201,143,0.12)" : "var(--bg2)",
             color: cfg.soundEnabled ? "var(--long)" : "var(--dim)",
           }}
-          title={cfg.soundEnabled ? "Sound Alert Enabled (Press M to mute)" : "Sound Alert Muted (Press M to enable)"}
+          title={cfg.soundEnabled ? "Sound Alerts Active (Click to mute, or press 'M')" : "Sound Alerts Muted (Click to enable, or press 'M')"}
         >
           <span>{cfg.soundEnabled ? "🔊" : "🔇"}</span>
         </button>

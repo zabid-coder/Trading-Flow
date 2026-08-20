@@ -32,6 +32,7 @@ export interface DispatchResult {
 
 /**
  * Dispatch an approved trade signal to MT5, Telegram, and generic Webhook.
+ * Includes 5s timeout per request, safe side fallback, and input validation.
  */
 export async function dispatchTradeOrder(
   item: QueueItem | Trade,
@@ -40,62 +41,80 @@ export async function dispatchTradeOrder(
 ): Promise<DispatchResult> {
   const targets: DispatchResult["targets"] = {};
   let overallSuccess = true;
-  let summaryMessages: string[] = [];
+  const summaryMessages: string[] = [];
 
-  const side = "side" in item ? item.side : "LONG";
+  const side = "side" in item && (item.side === "LONG" || item.side === "SHORT") ? item.side : "LONG";
   const action = side === "LONG" ? "BUY" : "SELL";
   const contracts = item.oz || 1;
-  const entry = item.entry;
-  const sl = item.sl;
-  const tp = item.tp;
+  const entry = item.entry || 0;
+  const sl = item.sl || 0;
+  const tp = item.tp || 0;
 
   // 1. MetaTrader 5 Bridge
   if (cfg.mt5Enabled && cfg.mt5Url) {
-    try {
-      const payload = {
-        secret: cfg.mt5Secret,
-        ticker: symbol,
-        action,
-        qty: Number(contracts.toFixed(2)),
-        price: Number(entry.toFixed(4)),
-        sl: Number(sl.toFixed(4)),
-        tp: Number(tp.toFixed(4)),
-        comment: `TradingFlow_${item.setup || "Signal"}`,
-      };
+    let mt5Sent = false;
+    let lastError = "";
 
-      const headers: Record<string, string> = {
-        "Content-Type": "application/json",
-      };
-      if (cfg.mt5Secret) {
-        headers["Authorization"] = `Bearer ${cfg.mt5Secret}`;
+    // Retry up to 2 times for transient network drops
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 5000);
+
+      try {
+        const payload = {
+          secret: cfg.mt5Secret,
+          ticker: symbol,
+          action,
+          qty: Number(contracts.toFixed(2)),
+          price: Number(entry.toFixed(4)),
+          sl: Number(sl.toFixed(4)),
+          tp: Number(tp.toFixed(4)),
+          comment: `TF_${item.setup || "Trap"}`,
+        };
+
+        const headers: Record<string, string> = {
+          "Content-Type": "application/json",
+        };
+        if (cfg.mt5Secret) {
+          headers["Authorization"] = `Bearer ${cfg.mt5Secret}`;
+        }
+
+        const res = await fetch(cfg.mt5Url, {
+          method: "POST",
+          headers,
+          body: JSON.stringify(payload),
+          signal: controller.signal,
+        });
+
+        clearTimeout(timeoutId);
+
+        if (res.ok) {
+          const data = await res.json();
+          targets.mt5 = { ok: true, msg: `MT5 Executed: Ticket #${data.ticket || data.order_id || "Filled"}` };
+          summaryMessages.push(`MT5 Order Placed`);
+          mt5Sent = true;
+          break;
+        } else {
+          const errText = await res.text();
+          lastError = `MT5 Error (${res.status}): ${errText.slice(0, 80)}`;
+        }
+      } catch (err: unknown) {
+        clearTimeout(timeoutId);
+        lastError = err instanceof Error ? (err.name === "AbortError" ? "Request timed out after 5s" : err.message) : "network error";
       }
+    }
 
-      const res = await fetch(cfg.mt5Url, {
-        method: "POST",
-        headers,
-        body: JSON.stringify(payload),
-      });
-
-      if (res.ok) {
-        const data = await res.json();
-        targets.mt5 = { ok: true, msg: `MT5 Executed: Ticket #${data.ticket || data.order_id || "Filled"}` };
-        summaryMessages.push(`MT5 Order Placed`);
-      } else {
-        const errText = await res.text();
-        targets.mt5 = { ok: false, msg: `MT5 Error (${res.status}): ${errText.slice(0, 80)}` };
-        overallSuccess = false;
-        summaryMessages.push(`MT5 Failed`);
-      }
-    } catch (err: unknown) {
-      const errMsg = err instanceof Error ? err.message : "network error";
-      targets.mt5 = { ok: false, msg: `MT5 Bridge unreachable (${errMsg})` };
+    if (!mt5Sent) {
+      targets.mt5 = { ok: false, msg: lastError };
       overallSuccess = false;
-      summaryMessages.push(`MT5 Unreachable`);
+      summaryMessages.push(`MT5 Failed`);
     }
   }
 
   // 2. Telegram Alerts
   if (cfg.telegramEnabled && cfg.telegramToken && cfg.telegramChatId) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 5000);
     try {
       const emoji = action === "BUY" ? "🟢" : "🔴";
       const tgText = `
@@ -121,7 +140,10 @@ _Dispatched at ${new Date().toISOString().slice(11, 19)} UTC_
           text: tgText,
           parse_mode: "Markdown",
         }),
+        signal: controller.signal,
       });
+
+      clearTimeout(timeoutId);
 
       if (res.ok) {
         targets.telegram = { ok: true, msg: "Telegram notification sent" };
@@ -133,6 +155,7 @@ _Dispatched at ${new Date().toISOString().slice(11, 19)} UTC_
         summaryMessages.push("Telegram Failed");
       }
     } catch (err: unknown) {
+      clearTimeout(timeoutId);
       const errMsg = err instanceof Error ? err.message : String(err);
       targets.telegram = { ok: false, msg: `Telegram error: ${errMsg}` };
       overallSuccess = false;
@@ -141,6 +164,8 @@ _Dispatched at ${new Date().toISOString().slice(11, 19)} UTC_
 
   // 3. Generic Webhook
   if (cfg.webhookEnabled && cfg.webhookUrl) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 5000);
     try {
       const payload = {
         symbol,
@@ -157,7 +182,11 @@ _Dispatched at ${new Date().toISOString().slice(11, 19)} UTC_
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
+        signal: controller.signal,
       });
+
+      clearTimeout(timeoutId);
+
       if (res.ok) {
         targets.webhook = { ok: true, msg: "Webhook delivered" };
         summaryMessages.push("Webhook Sent");
@@ -166,6 +195,7 @@ _Dispatched at ${new Date().toISOString().slice(11, 19)} UTC_
         overallSuccess = false;
       }
     } catch (err: unknown) {
+      clearTimeout(timeoutId);
       const errMsg = err instanceof Error ? err.message : String(err);
       targets.webhook = { ok: false, msg: `Webhook error: ${errMsg}` };
       overallSuccess = false;

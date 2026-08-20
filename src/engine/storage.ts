@@ -14,9 +14,22 @@ export function loadJournalTrades(): Trade[] {
   return [];
 }
 
+export function pruneTrades(maxDays: number = 90) {
+  try {
+    const trades = loadJournalTrades();
+    const cutoff = Date.now() - maxDays * 86400000;
+    const keep = trades.filter((t) => (t.exitTime || t.entryTime || 0) > cutoff).slice(-500);
+    localStorage.setItem(JOURNAL_STORAGE_KEY, JSON.stringify(keep));
+  } catch (e) {
+    console.warn("Failed to prune journal trades:", e);
+  }
+}
+
 export function saveJournalTrades(trades: Trade[]) {
   try {
-    localStorage.setItem(JOURNAL_STORAGE_KEY, JSON.stringify(trades.slice(-500)));
+    const cutoff = Date.now() - 90 * 86400000;
+    const keep = trades.filter((t) => (t.exitTime || t.entryTime || 0) > cutoff).slice(-500);
+    localStorage.setItem(JOURNAL_STORAGE_KEY, JSON.stringify(keep));
   } catch (e) {
     console.warn("Failed to save journal trades to localStorage:", e);
   }
