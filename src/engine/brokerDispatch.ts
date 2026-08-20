@@ -31,8 +31,20 @@ export interface DispatchResult {
 }
 
 /**
+ * Realistic session-specific slippage model (pts)
+ */
+export function getSessionSlippage(utcHour: number): number {
+  if (utcHour >= 12 && hour <= 15) return 0.35; // NY / London Overlap (high volatility)
+  if (utcHour >= 7 && utcHour <= 11) return 0.20; // London Open
+  if (utcHour >= 0 && utcHour <= 8) return 0.15;  // Tokyo / Asian session
+  return 0.45; // Off-hours / Illiquid session
+}
+
+const hour = new Date().getUTCHours();
+
+/**
  * Dispatch an approved trade signal to MT5, Telegram, and generic Webhook.
- * Includes 5s timeout per request, safe side fallback, and input validation.
+ * Includes pre-dispatch validation, 5s timeout, session slippage modeling, and safe side fallback.
  */
 export async function dispatchTradeOrder(
   item: QueueItem | Trade,
@@ -46,7 +58,11 @@ export async function dispatchTradeOrder(
   const side = "side" in item && (item.side === "LONG" || item.side === "SHORT") ? item.side : "LONG";
   const action = side === "LONG" ? "BUY" : "SELL";
   const contracts = item.oz || 1;
-  const entry = item.entry || 0;
+  const currentHour = new Date().getUTCHours();
+  const sessionSlippage = getSessionSlippage(currentHour);
+  const dir = side === "LONG" ? 1 : -1;
+  const rawEntry = item.entry || 0;
+  const entry = rawEntry + dir * sessionSlippage;
   const sl = item.sl || 0;
   const tp = item.tp || 0;
 

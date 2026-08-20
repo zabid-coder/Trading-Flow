@@ -169,7 +169,7 @@ function buildAois(st: EngineState, cfg: EngineConfig, cdhPrev: number, cdlPrev:
       if (p2.i - p1.i >= 3 && p3.i - p2.i >= 3) {
         const mx = Math.max(p1.p, p2.p, p3.p);
         const mn = Math.min(p1.p, p2.p, p3.p);
-        if (mx - mn <= (close * cfg.tripleTol) / 100) {
+        if (mx - mn <= (close * cfg.tripleTol) / 100 || mx - mn <= 0.35 * atr) {
           let dead = false;
           for (let j = p3.i + 2; j < n; j++) if (bars[j].c > mx + 0.45 * atr) { dead = true; break; }
           if (!dead) addZone({ kind: "TT", role: "R", y1: mn, y2: mx, ty: mx, from: p1.i, label: "TRIPLE TOP", active: true });
@@ -181,7 +181,7 @@ function buildAois(st: EngineState, cfg: EngineConfig, cdhPrev: number, cdlPrev:
       if (p2.i - p1.i >= 3 && p3.i - p2.i >= 3) {
         const mx = Math.max(p1.p, p2.p, p3.p);
         const mn = Math.min(p1.p, p2.p, p3.p);
-        if (mx - mn <= (close * cfg.tripleTol) / 100) {
+        if (mx - mn <= (close * cfg.tripleTol) / 100 || mx - mn <= 0.35 * atr) {
           let dead = false;
           for (let j = p3.i + 2; j < n; j++) if (bars[j].c < mn - 0.45 * atr) { dead = true; break; }
           if (!dead) addZone({ kind: "TB", role: "S", y1: mn, y2: mx, ty: mn, from: p1.i, label: "TRIPLE BOTTOM", active: true });

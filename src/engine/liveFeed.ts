@@ -72,6 +72,8 @@ export function connectLiveFeed(
   let lastMessageTime = Date.now();
   let reconnectTimeout: number | null = null;
   let retryCount = 0;
+  let lastClosedBar: Bar | null = null;
+  let formingBar: Bar | null = null;
 
   function initSocket() {
     if (closedManually) return;
@@ -91,21 +93,26 @@ export function connectLiveFeed(
         const latency = Math.max(12, Date.now() - pingStart);
         listener.onStatus("connected", latency);
 
+        // Gap Recovery: if we had a cached in-flight forming bar, emit it to reconcile
+        if (formingBar && (!lastClosedBar || formingBar.t > lastClosedBar.t)) {
+          listener.onBar(formingBar, false);
+        }
+
         if (pingInterval) window.clearInterval(pingInterval);
         pingInterval = window.setInterval(() => {
           if (ws?.readyState === WebSocket.OPEN) {
             listener.onStatus("connected", Math.floor(15 + Math.random() * 25));
           }
-        }, 10000);
+        }, 5000);
 
         // Heartbeat Watchdog: Check if we haven't received a tick in 8s
         if (heartbeatCheckInterval) window.clearInterval(heartbeatCheckInterval);
         heartbeatCheckInterval = window.setInterval(() => {
-          if (Date.now() - lastMessageTime > 12000 && !closedManually) {
-            console.warn("[LiveFeed] Heartbeat timeout — forcing reconnection...");
+          if (Date.now() - lastMessageTime > 8000 && !closedManually) {
+            console.warn("[LiveFeed] Heartbeat timeout (8s) — forcing reconnection...");
             ws?.close();
           }
-        }, 4000);
+        }, 3000);
       };
 
       ws.onmessage = (event) => {
@@ -123,7 +130,16 @@ export function connectLiveFeed(
               v: parseFloat(k.v),
               day: Math.floor(Number(k.t) / 86400000),
             };
-            listener.onBar(bar, k.x === true);
+
+            const isClosed = k.x === true;
+            if (isClosed) {
+              lastClosedBar = bar;
+              formingBar = null;
+            } else {
+              formingBar = bar;
+            }
+
+            listener.onBar(bar, isClosed);
           }
         } catch (e) {
           console.error("Error parsing live kline:", e);
