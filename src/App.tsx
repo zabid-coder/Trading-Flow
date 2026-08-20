@@ -475,7 +475,7 @@ function TerminalContent() {
           <CandleChart
             st={st}
             cfg={cfg}
-            onDecide={handleDecide}
+            onDecide={onDecide}
             onMoveToBreakeven={() => {
               moveToBreakeven(st, cfg);
               setTick((t) => t + 1);
