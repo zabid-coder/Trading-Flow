@@ -77,7 +77,7 @@ function pickNextRegime(current: MarketRegime, rng: () => number): { regime: Mar
   return { regime: next, duration };
 }
 
-/** Generate the next bar using a multi-regime Markov-switching model. */
+/** Generate the next bar using an enhanced Markov-switching institutional microstructure model. */
 export function nextBar(st: EngineState, intervalMs: number = BAR_MS): Bar {
   const rng = st.rng;
   const t = st.nextT;
@@ -97,62 +97,99 @@ export function nextBar(st: EngineState, intervalMs: number = BAR_MS): Bar {
 
   const tfMult = Math.sqrt(intervalMs / BAR_MS);
   const baseVol = st.price * 0.0011 * s.mult * tfMult;
+  const atr = st.atr || baseVol * 1.5;
 
-  const o = st.price;
+  // 1. Session Rollover Gaps & High-Impact News Gaps
+  const isNewDay = Math.floor(t / DAY_MS) !== Math.floor((t - intervalMs) / DAY_MS);
+  let gap = 0;
+  if (isNewDay && rng() < 0.35) {
+    // 35% of day rollovers experience overnight gap jumps (0.8x to 2.4x ATR)
+    const gapDir = rng() < 0.5 ? 1 : -1;
+    gap = gapDir * atr * (0.8 + rng() * 1.6);
+  } else if (rng() < 0.0035) {
+    // Intraday sudden news impulse gap (e.g. CPI / NFP release)
+    const gapDir = rng() < 0.5 ? 1 : -1;
+    gap = gapDir * atr * (1.0 + rng() * 1.8);
+  }
+
+  const o = st.price + gap;
   let c = o;
   let wU = 0;
   let wD = 0;
   let v = s.mult * (0.6 + rng() * 0.8);
 
+  // 2. Regime-Specific Bar Generation
   switch (st.regime) {
     case "TRENDING_BULL": {
-      const dirVol = baseVol * (1.1 + rng() * 0.5);
-      const body = dirVol * (0.45 + rng() * 0.65);
+      const dirVol = baseVol * (1.15 + rng() * 0.55);
+      const body = dirVol * (0.40 + rng() * 0.70);
       c = o + body;
-      wU = Math.abs(gauss(rng)) * dirVol * 0.35;
-      wD = Math.abs(gauss(rng)) * dirVol * 0.25;
-      v *= 1.45;
+      wU = Math.abs(gauss(rng)) * dirVol * 0.30;
+      wD = Math.abs(gauss(rng)) * dirVol * 0.22;
+      v *= 1.5;
       break;
     }
     case "TRENDING_BEAR": {
-      const dirVol = baseVol * (1.1 + rng() * 0.5);
-      const body = dirVol * (0.45 + rng() * 0.65);
+      const dirVol = baseVol * (1.15 + rng() * 0.55);
+      const body = dirVol * (0.40 + rng() * 0.70);
       c = o - body;
-      wU = Math.abs(gauss(rng)) * dirVol * 0.25;
-      wD = Math.abs(gauss(rng)) * dirVol * 0.35;
-      v *= 1.45;
+      wU = Math.abs(gauss(rng)) * dirVol * 0.22;
+      wD = Math.abs(gauss(rng)) * dirVol * 0.30;
+      v *= 1.5;
       break;
     }
     case "LIQUIDITY_HUNT": {
-      // High volatility spike sweeping levels and closing inside (Trap/Rejection)
-      const sweepVol = baseVol * (1.6 + rng() * 1.4);
+      // High volatility sweep hunting previous liquidity pools
+      const sweepVol = baseVol * (1.5 + rng() * 1.5);
       const huntLow = rng() < 0.5;
-      const body = sweepVol * 0.18 * (rng() - 0.5);
-      c = o + body;
-      if (huntLow) {
-        // Long lower shadow (LPR)
-        wD = sweepVol * (1.6 + rng() * 1.2);
-        wU = sweepVol * 0.18 * rng();
+      const isCleanRejection = rng() < 0.60; // 60% clean rejection, 40% messy wick fill
+
+      if (isCleanRejection) {
+        const body = sweepVol * 0.16 * (rng() - 0.5);
+        c = o + body;
+        if (huntLow) {
+          wD = sweepVol * (1.5 + rng() * 1.3);
+          wU = sweepVol * 0.22 * rng();
+        } else {
+          wU = sweepVol * (1.5 + rng() * 1.3);
+          wD = sweepVol * 0.22 * rng();
+        }
       } else {
-        // Long upper shadow (HPR)
-        wU = sweepVol * (1.6 + rng() * 1.2);
-        wD = sweepVol * 0.18 * rng();
+        // Messy rejection (less pronounced wick, larger counter-body)
+        const body = sweepVol * 0.45 * (huntLow ? 0.8 : -0.8);
+        c = o + body;
+        wD = sweepVol * (0.8 + rng() * 0.7);
+        wU = sweepVol * (0.8 + rng() * 0.7);
       }
-      v *= 2.1; // Significant volume confluence during sweeps
+      v *= 2.2;
       break;
     }
     case "RANGING_CHOP":
     default: {
-      // Mean-reversion toward day open / range centroid
+      // Mean-reverting chop with clustering near nearest extremes
       const chopVol = baseVol * (0.75 + rng() * 0.45);
       const stretch = o - st.dayOpen;
-      const pull = stretch * 0.08;
-      c = o - pull + gauss(rng) * chopVol * 0.45;
-      wU = Math.abs(gauss(rng)) * chopVol * 0.55;
-      wD = Math.abs(gauss(rng)) * chopVol * 0.55;
+      const pull = stretch * 0.09;
+      c = o - pull + gauss(rng) * chopVol * 0.40;
+      wU = Math.abs(gauss(rng)) * chopVol * 0.48;
+      wD = Math.abs(gauss(rng)) * chopVol * 0.48;
       v *= 0.85;
       break;
     }
+  }
+
+  // 3. Flash Crash / Liquidity Void Tail Events (~2-3 times per month, 0.12% probability)
+  if (rng() < 0.0012) {
+    const isCrashDown = rng() < 0.70;
+    const flashMagnitude = atr * (3.0 + rng() * 1.4); // 3.0x to 4.4x ATR spike
+    if (isCrashDown) {
+      wD = Math.max(wD, flashMagnitude);
+      c = o - flashMagnitude * (0.10 + rng() * 0.15); // 75-90% rapid wick recovery
+    } else {
+      wU = Math.max(wU, flashMagnitude);
+      c = o + flashMagnitude * (0.10 + rng() * 0.15);
+    }
+    v *= 3.5;
   }
 
   const h = Math.max(o, c) + Math.max(0.01, wU);

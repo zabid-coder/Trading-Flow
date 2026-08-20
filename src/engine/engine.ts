@@ -19,7 +19,7 @@ export const DEFAULT_CFG: EngineConfig = {
   riskUSD: 375,
   rr: 2.0,
   maxDailySL: 2,
-  rejThresh: 0.5,
+  rejThresh: 0.58,
   powerAtr: 1.2,
   pointValue: 1.0, // XAUUSD: $1.00 P&L per oz per $1.00 move
   tripleTol: 0.14,
