@@ -27,7 +27,9 @@ def init_db():
                 symbol TEXT,
                 action TEXT,
                 volume REAL,
+                expected_price REAL,
                 entry REAL,
+                slippage_pts REAL DEFAULT 0,
                 sl REAL,
                 tp REAL,
                 profit REAL DEFAULT 0,
@@ -40,6 +42,15 @@ def init_db():
                 sl_hits INTEGER DEFAULT 0
             )
         """)
+        # Safe migration if table existed previously without slippage columns
+        try:
+            conn.execute("ALTER TABLE trades ADD COLUMN expected_price REAL")
+        except Exception:
+            pass
+        try:
+            conn.execute("ALTER TABLE trades ADD COLUMN slippage_pts REAL DEFAULT 0")
+        except Exception:
+            pass
         conn.commit()
 
 @contextmanager
@@ -147,7 +158,6 @@ def place_order(order: OrderPayload, authorization: Optional[str] = Header(None)
 
     # Find symbol in MT5
     symbol = order.ticker
-    # Handle common broker symbol variations (e.g., XAUUSDm, XAUUSD.pro)
     sym_info = mt5.symbol_info(symbol)
     if not sym_info:
         for suffix in ["m", ".pro", ".ecn", "_i", ""]:
@@ -174,6 +184,16 @@ def place_order(order: OrderPayload, authorization: Optional[str] = Header(None)
     step = sym_info.volume_step if sym_info.volume_step > 0 else 0.01
     vol = max(sym_info.volume_min, min(sym_info.volume_max, round(order.qty / step) * step))
 
+    # Adaptive filling mode resolution based on broker symbol support
+    filling_type = mt5.ORDER_FILLING_IOC
+    if hasattr(sym_info, 'filling_mode'):
+        if sym_info.filling_mode & 1: # ORDER_FILLING_FOK
+            filling_type = mt5.ORDER_FILLING_FOK
+        elif sym_info.filling_mode & 2: # ORDER_FILLING_IOC
+            filling_type = mt5.ORDER_FILLING_IOC
+        elif sym_info.filling_mode & 4: # ORDER_FILLING_RETURN
+            filling_type = mt5.ORDER_FILLING_RETURN
+
     req = {
         "action": mt5.TRADE_ACTION_DEAL,
         "symbol": symbol,
@@ -186,7 +206,7 @@ def place_order(order: OrderPayload, authorization: Optional[str] = Header(None)
         "magic": 108821,
         "comment": order.comment or "Trading Flow",
         "type_time": mt5.ORDER_TIME_GTC,
-        "type_filling": mt5.ORDER_FILLING_IOC,
+        "type_filling": filling_type,
     }
 
     result = mt5.order_send(req)
@@ -194,18 +214,24 @@ def place_order(order: OrderPayload, authorization: Optional[str] = Header(None)
         err = result.comment if result else str(mt5.last_error())
         raise HTTPException(status_code=500, detail=f"MT5 order failed: {err}")
 
-    # Record trade in DB
+    # Calculate execution slippage
+    expected_px = float(order.price) if order.price else fill_price
+    slippage_pts = round(abs(result.price - expected_px), 3)
+
+    # Record trade with slippage audit in DB
     with get_db() as conn:
         conn.execute("""
-            INSERT INTO trades (ts, ticket, symbol, action, volume, entry, sl, tp, status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'OPEN')
+            INSERT INTO trades (ts, ticket, symbol, action, volume, expected_price, entry, slippage_pts, sl, tp, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN')
         """, (
             datetime.utcnow().isoformat(),
             result.order,
             symbol,
             order.action.upper(),
             vol,
+            expected_px,
             result.price,
+            slippage_pts,
             order.sl or 0.0,
             order.tp or 0.0
         ))
@@ -217,6 +243,8 @@ def place_order(order: OrderPayload, authorization: Optional[str] = Header(None)
         "action": order.action.upper(),
         "volume": vol,
         "price": result.price,
+        "expected_price": expected_px,
+        "slippage": slippage_pts,
         "sl": order.sl,
         "tp": order.tp
     }

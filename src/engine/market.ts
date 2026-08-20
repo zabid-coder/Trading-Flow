@@ -1,4 +1,4 @@
-import type { Bar, EngineState } from "./types";
+import type { Bar, EngineState, MarketRegime } from "./types";
 
 export const BAR_MS = 15 * 60 * 1000; // 15-minute bars
 export const DAY_MS = 86400000;
@@ -47,7 +47,37 @@ function gauss(rng: () => number) {
   return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
 }
 
-/** Generate the next bar with dynamic timeframe interval. */
+/** Transition matrix for market regimes */
+function pickNextRegime(current: MarketRegime, rng: () => number): { regime: MarketRegime; duration: number } {
+  const r = rng();
+  let next: MarketRegime = "RANGING_CHOP";
+
+  if (current === "RANGING_CHOP") {
+    if (r < 0.35) next = "RANGING_CHOP";
+    else if (r < 0.60) next = "LIQUIDITY_HUNT";
+    else if (r < 0.80) next = "TRENDING_BULL";
+    else next = "TRENDING_BEAR";
+  } else if (current === "TRENDING_BULL") {
+    if (r < 0.50) next = "TRENDING_BULL";
+    else if (r < 0.75) next = "LIQUIDITY_HUNT"; // blow-off trap top
+    else next = "RANGING_CHOP";
+  } else if (current === "TRENDING_BEAR") {
+    if (r < 0.50) next = "TRENDING_BEAR";
+    else if (r < 0.75) next = "LIQUIDITY_HUNT"; // flush trap bottom
+    else next = "RANGING_CHOP";
+  } else {
+    // After LIQUIDITY_HUNT -> usually mean-revert or trend reverse
+    if (r < 0.45) next = "RANGING_CHOP";
+    else if (r < 0.75) next = "TRENDING_BULL";
+    else next = "TRENDING_BEAR";
+  }
+
+  // Duration in bars (between 6 and 28 bars)
+  const duration = Math.floor(6 + rng() * 22);
+  return { regime: next, duration };
+}
+
+/** Generate the next bar using a multi-regime Markov-switching model. */
 export function nextBar(st: EngineState, intervalMs: number = BAR_MS): Bar {
   const rng = st.rng;
   const t = st.nextT;
@@ -56,42 +86,78 @@ export function nextBar(st: EngineState, intervalMs: number = BAR_MS): Bar {
   const hour = Math.floor(((t % DAY_MS) + DAY_MS) / 3600000) % 24;
   const s = sessionInfo(hour);
 
-  // regime drift — occasional flips between trend and chop
-  if (rng() < 0.016) st.trend = (rng() - 0.5) * 2;
+  // Initialize or step regime counter
+  if (!st.regime || st.regimeBarsLeft == null || st.regimeBarsLeft <= 0) {
+    const { regime, duration } = pickNextRegime(st.regime || "RANGING_CHOP", rng);
+    st.regime = regime;
+    st.regimeBarsLeft = duration;
+  } else {
+    st.regimeBarsLeft--;
+  }
 
   const tfMult = Math.sqrt(intervalMs / BAR_MS);
-  const vol = (st.price * 0.0012) * s.mult * (0.72 + rng() * 0.56) * tfMult;
-  const drift = st.trend * vol * 0.16;
+  const baseVol = st.price * 0.0011 * s.mult * tfMult;
 
   const o = st.price;
-  let c = o + drift + gauss(rng) * vol * 0.52;
+  let c = o;
+  let wU = 0;
+  let wD = 0;
+  let v = s.mult * (0.6 + rng() * 0.8);
 
-  // stretch reversion toward the day's opening price
-  const stretch = c - st.dayOpen;
-  if (Math.abs(stretch) > (st.price * 0.01)) c -= stretch * 0.11;
-
-  let wU = Math.abs(gauss(rng)) * vol * 0.42;
-  let wD = Math.abs(gauss(rng)) * vol * 0.42;
-
-  // liquidity-sweep / rejection bars occur naturally at the edges —
-  // inject realistic hunt-and-reject wicks ~9% of the time
-  if (rng() < 0.09) {
-    const huntLow = rng() < 0.5;
-    const body = vol * 0.22 * rng();
-    if (huntLow) {
-      c = o + body * 0.6;
-      wD = vol * (1.7 + rng() * 1.5);
-      wU = vol * 0.14;
-    } else {
-      c = o - body * 0.6;
-      wU = vol * (1.7 + rng() * 1.5);
-      wD = vol * 0.14;
+  switch (st.regime) {
+    case "TRENDING_BULL": {
+      const dirVol = baseVol * (1.1 + rng() * 0.5);
+      const body = dirVol * (0.45 + rng() * 0.65);
+      c = o + body;
+      wU = Math.abs(gauss(rng)) * dirVol * 0.35;
+      wD = Math.abs(gauss(rng)) * dirVol * 0.25;
+      v *= 1.45;
+      break;
+    }
+    case "TRENDING_BEAR": {
+      const dirVol = baseVol * (1.1 + rng() * 0.5);
+      const body = dirVol * (0.45 + rng() * 0.65);
+      c = o - body;
+      wU = Math.abs(gauss(rng)) * dirVol * 0.25;
+      wD = Math.abs(gauss(rng)) * dirVol * 0.35;
+      v *= 1.45;
+      break;
+    }
+    case "LIQUIDITY_HUNT": {
+      // High volatility spike sweeping levels and closing inside (Trap/Rejection)
+      const sweepVol = baseVol * (1.6 + rng() * 1.4);
+      const huntLow = rng() < 0.5;
+      const body = sweepVol * 0.18 * (rng() - 0.5);
+      c = o + body;
+      if (huntLow) {
+        // Long lower shadow (LPR)
+        wD = sweepVol * (1.6 + rng() * 1.2);
+        wU = sweepVol * 0.18 * rng();
+      } else {
+        // Long upper shadow (HPR)
+        wU = sweepVol * (1.6 + rng() * 1.2);
+        wD = sweepVol * 0.18 * rng();
+      }
+      v *= 2.1; // Significant volume confluence during sweeps
+      break;
+    }
+    case "RANGING_CHOP":
+    default: {
+      // Mean-reversion toward day open / range centroid
+      const chopVol = baseVol * (0.75 + rng() * 0.45);
+      const stretch = o - st.dayOpen;
+      const pull = stretch * 0.08;
+      c = o - pull + gauss(rng) * chopVol * 0.45;
+      wU = Math.abs(gauss(rng)) * chopVol * 0.55;
+      wD = Math.abs(gauss(rng)) * chopVol * 0.55;
+      v *= 0.85;
+      break;
     }
   }
 
-  const h = Math.max(o, c) + wU;
-  const l = Math.min(o, c) - wD;
-  const v = s.mult * (0.45 + rng()) * (1 + Math.abs(c - o) / Math.max(1e-5, vol));
+  const h = Math.max(o, c) + Math.max(0.01, wU);
+  const l = Math.min(o, c) - Math.max(0.01, wD);
+  v = Math.max(0.1, v * (1 + Math.abs(c - o) / Math.max(1e-5, baseVol)));
 
   st.price = c;
 

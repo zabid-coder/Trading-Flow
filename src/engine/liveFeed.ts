@@ -68,6 +68,8 @@ export function connectLiveFeed(
   let ws: WebSocket | null = null;
   let closedManually = false;
   let pingInterval: number | null = null;
+  let heartbeatCheckInterval: number | null = null;
+  let lastMessageTime = Date.now();
   let reconnectTimeout: number | null = null;
   let retryCount = 0;
 
@@ -85,6 +87,7 @@ export function connectLiveFeed(
           return;
         }
         retryCount = 0; // Reset exponential backoff on successful connect
+        lastMessageTime = Date.now();
         const latency = Math.max(12, Date.now() - pingStart);
         listener.onStatus("connected", latency);
 
@@ -94,9 +97,19 @@ export function connectLiveFeed(
             listener.onStatus("connected", Math.floor(15 + Math.random() * 25));
           }
         }, 10000);
+
+        // Heartbeat Watchdog: Check if we haven't received a tick in 8s
+        if (heartbeatCheckInterval) window.clearInterval(heartbeatCheckInterval);
+        heartbeatCheckInterval = window.setInterval(() => {
+          if (Date.now() - lastMessageTime > 12000 && !closedManually) {
+            console.warn("[LiveFeed] Heartbeat timeout — forcing reconnection...");
+            ws?.close();
+          }
+        }, 4000);
       };
 
       ws.onmessage = (event) => {
+        lastMessageTime = Date.now();
         try {
           const payload = JSON.parse(event.data);
           if (payload.e === "kline" && payload.k) {
@@ -124,6 +137,7 @@ export function connectLiveFeed(
 
       ws.onclose = () => {
         if (pingInterval) window.clearInterval(pingInterval);
+        if (heartbeatCheckInterval) window.clearInterval(heartbeatCheckInterval);
         if (!closedManually) {
           listener.onStatus("disconnected", 0);
           // Exponential backoff with jitter: 2s, 4s, 8s, up to 30s
@@ -149,6 +163,7 @@ export function connectLiveFeed(
   return () => {
     closedManually = true;
     if (pingInterval) window.clearInterval(pingInterval);
+    if (heartbeatCheckInterval) window.clearInterval(heartbeatCheckInterval);
     if (reconnectTimeout) window.clearTimeout(reconnectTimeout);
     if (ws) {
       ws.close();

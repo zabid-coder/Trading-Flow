@@ -134,23 +134,92 @@ export default function ConsolePanel({ cfg, onCfg, onAoi, st, stats }: Props) {
       {/* ---- risk engine ---- */}
       <div className="mb-4 rounded-md border p-3" style={{ borderColor: "var(--line-soft)", background: "var(--bg1)" }}>
         <div className="mb-2 flex items-center justify-between">
-          <span className="font-mono text-[9px] tracking-[0.22em] text-[var(--dim)]">STEP 5 · RISK ENGINE</span>
+          <span className="font-mono text-[9px] tracking-[0.22em] text-[var(--dim)]">STEP 5 · RISK & SIZING ENGINE</span>
           <span className="font-mono text-[10px] text-[var(--muted)]">BAL <span className="font-semibold text-[var(--ink)]">{fmtUSD(st.balance)}</span></span>
         </div>
+
+        {/* Position Sizing Mode Tabs */}
+        <div className="mb-3">
+          <span className="mb-1 block font-mono text-[9px] tracking-[0.16em] text-[var(--muted)]">SIZING ALGORITHM</span>
+          <div className="flex overflow-hidden rounded-md border" style={{ borderColor: "var(--line)" }}>
+            <button
+              onClick={() => onCfg({ sizingMode: "fixedUSD" })}
+              className="flex-1 py-1 font-mono text-[10px] font-bold transition-colors"
+              style={{
+                background: (cfg.sizingMode || "percentEquity") === "fixedUSD" ? "rgba(232,180,76,0.18)" : "var(--bg2)",
+                color: (cfg.sizingMode || "percentEquity") === "fixedUSD" ? "var(--gold-hi)" : "var(--muted)",
+              }}
+            >
+              Fixed USD
+            </button>
+            <button
+              onClick={() => onCfg({ sizingMode: "percentEquity" })}
+              className="flex-1 py-1 font-mono text-[10px] font-bold transition-colors"
+              style={{
+                background: cfg.sizingMode === "percentEquity" ? "rgba(232,180,76,0.18)" : "var(--bg2)",
+                color: cfg.sizingMode === "percentEquity" ? "var(--gold-hi)" : "var(--muted)",
+              }}
+            >
+              % Equity
+            </button>
+            <button
+              onClick={() => onCfg({ sizingMode: "fractionalKelly" })}
+              className="flex-1 py-1 font-mono text-[10px] font-bold transition-colors"
+              style={{
+                background: cfg.sizingMode === "fractionalKelly" ? "rgba(232,180,76,0.18)" : "var(--bg2)",
+                color: cfg.sizingMode === "fractionalKelly" ? "var(--gold-hi)" : "var(--muted)",
+              }}
+            >
+              Kelly Criterion
+            </button>
+          </div>
+        </div>
+
         <div className="mb-3 grid grid-cols-2 gap-2">
-          <label className="block">
-            <span className="mb-1 block font-mono text-[9px] tracking-[0.16em] text-[var(--muted)]">RISK / TRADE (USD)</span>
-            <input
-              type="number"
-              min={25}
-              max={5000}
-              step={25}
-              value={cfg.riskUSD}
-              onChange={(e) => onCfg({ riskUSD: Math.max(25, Math.min(5000, Number(e.target.value) || 25)) })}
-              className="w-full rounded-md border px-2 py-1.5 font-mono text-[13px] font-semibold outline-none transition-colors focus:border-[var(--gold)]"
-              style={{ borderColor: "var(--line)", background: "var(--bg2)", color: "var(--gold-hi)" }}
-            />
-          </label>
+          {cfg.sizingMode === "percentEquity" ? (
+            <label className="block">
+              <span className="mb-1 block font-mono text-[9px] tracking-[0.16em] text-[var(--muted)]">EQUITY RISK (%)</span>
+              <input
+                type="number"
+                min={0.5}
+                max={10}
+                step={0.5}
+                value={cfg.equityRiskPct || 2.0}
+                onChange={(e) => onCfg({ equityRiskPct: Math.max(0.5, Math.min(10, Number(e.target.value) || 2)) })}
+                className="w-full rounded-md border px-2 py-1.5 font-mono text-[13px] font-semibold outline-none transition-colors focus:border-[var(--gold)]"
+                style={{ borderColor: "var(--line)", background: "var(--bg2)", color: "var(--gold-hi)" }}
+              />
+            </label>
+          ) : cfg.sizingMode === "fractionalKelly" ? (
+            <label className="block">
+              <span className="mb-1 block font-mono text-[9px] tracking-[0.16em] text-[var(--muted)]">KELLY FRACTION</span>
+              <input
+                type="number"
+                min={0.1}
+                max={1.0}
+                step={0.05}
+                value={cfg.kellyFraction || 0.35}
+                onChange={(e) => onCfg({ kellyFraction: Math.max(0.1, Math.min(1.0, Number(e.target.value) || 0.35)) })}
+                className="w-full rounded-md border px-2 py-1.5 font-mono text-[13px] font-semibold outline-none transition-colors focus:border-[var(--gold)]"
+                style={{ borderColor: "var(--line)", background: "var(--bg2)", color: "var(--gold-hi)" }}
+              />
+            </label>
+          ) : (
+            <label className="block">
+              <span className="mb-1 block font-mono text-[9px] tracking-[0.16em] text-[var(--muted)]">RISK / TRADE (USD)</span>
+              <input
+                type="number"
+                min={25}
+                max={5000}
+                step={25}
+                value={cfg.riskUSD}
+                onChange={(e) => onCfg({ riskUSD: Math.max(25, Math.min(5000, Number(e.target.value) || 25)) })}
+                className="w-full rounded-md border px-2 py-1.5 font-mono text-[13px] font-semibold outline-none transition-colors focus:border-[var(--gold)]"
+                style={{ borderColor: "var(--line)", background: "var(--bg2)", color: "var(--gold-hi)" }}
+              />
+            </label>
+          )}
+
           <div>
             <span className="mb-1 block font-mono text-[9px] tracking-[0.16em] text-[var(--muted)]">MAX DAILY SL HITS</span>
             <div className="flex overflow-hidden rounded-md border" style={{ borderColor: "var(--line)" }}>
@@ -163,9 +232,21 @@ export default function ConsolePanel({ cfg, onCfg, onAoi, st, stats }: Props) {
             </div>
           </div>
         </div>
+
         <div className="space-y-3">
           <Slider label="RISK : REWARD TARGET" value={cfg.rr} min={1.5} max={4} step={0.1} display={`1 : ${cfg.rr.toFixed(1)}`} onChange={(v) => onCfg({ rr: v })} />
           <Slider label="MODELED SPREAD (FRICTION)" value={cfg.spread} min={0} max={0.6} step={0.05} display={`$${cfg.spread.toFixed(2)}`} onChange={(v) => onCfg({ spread: v })} />
+          <Slider label="SLIPPAGE MODEL (POINTS)" value={cfg.slippagePoints || 0.15} min={0} max={0.5} step={0.05} display={`±${(cfg.slippagePoints || 0.15).toFixed(2)} pts`} onChange={(v) => onCfg({ slippagePoints: v })} />
+          
+          <div className="pt-1">
+            <Toggle
+              label="TRAILING STOP LOSS"
+              desc={`Locks profit past +${(cfg.trailThresholdR || 1.5).toFixed(1)}R at ${(cfg.trailAtrDist || 1.0).toFixed(1)}× ATR`}
+              on={!!cfg.trailingStop}
+              onChange={() => onCfg({ trailingStop: !cfg.trailingStop })}
+            />
+          </div>
+
           <div className="grid grid-cols-3 gap-2 rounded-md border border-dashed px-2.5 py-2 font-mono text-[10px]" style={{ borderColor: "var(--line)" }}>
             <div>
               <div className="text-[8px] tracking-[0.16em] text-[var(--dim)]">EST. STOP</div>
@@ -179,21 +260,6 @@ export default function ConsolePanel({ cfg, onCfg, onAoi, st, stats }: Props) {
               <div className="text-[8px] tracking-[0.16em] text-[var(--dim)]">TP TARGET</div>
               <div className="font-semibold text-[var(--long)]">+${tpEst.toFixed(2)}/oz</div>
             </div>
-          </div>
-          <div className="rounded-md border px-2.5 py-2" style={{ borderColor: "var(--line-soft)", background: "var(--bg1)" }}>
-            <div className="mb-1 flex items-center justify-between">
-              <span className="font-mono text-[8px] tracking-[0.16em] text-[var(--dim)]">CONTRACT SPEC · XAUUSD</span>
-              <span className="font-mono text-[9px] font-semibold" style={{ color: "var(--gold)" }}>PV ${cfg.pointValue.toFixed(2)}/oz · SPREAD ${cfg.spread.toFixed(2)}</span>
-            </div>
-            <div className="font-mono text-[10px] leading-relaxed text-[var(--muted)]">
-              FILL = close ± spread/2 · SIZE = risk ÷ (SL Δ × pv)
-              <span className="block text-[var(--gold-hi)]">= {ozEst.toFixed(1)} oz @ est. stop ${slEst.toFixed(2)} (spread included)</span>
-            </div>
-          </div>
-          <div className="font-body text-[10px] italic leading-snug text-[var(--dim)]">
-            Every fill pays the modeled spread — longs buy the ask, shorts sell the bid, exits cross it again.
-            Slippage and commissions are NOT modeled, so treat these results as an optimistic bound:
-            live performance will be worse. For FX pairs, swap in the pair's own point value.
           </div>
         </div>
       </div>

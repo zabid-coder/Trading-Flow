@@ -36,6 +36,15 @@ export const DEFAULT_CFG: EngineConfig = {
   autoBreakeven: true,
   beThresholdR: 1.0,
   soundEnabled: true,
+  sizingMode: "percentEquity",
+  equityRiskPct: 2.0,
+  kellyFraction: 0.35,
+  trailingStop: true,
+  trailThresholdR: 1.5,
+  trailAtrDist: 1.0,
+  slippagePoints: 0.15,
+  minSlAtr: 0.2,
+  maxSlAtr: 4.0,
 };
 
 const seenZones = new WeakMap<EngineState, Set<string>>();
@@ -52,19 +61,21 @@ function ev(
 }
 
 /* ------------------------------------------------------------------ */
-/*  Candle classification — Reaction Candle filter                     */
+/*  Candle classification — Strict Reaction Morphology filter          */
 /* ------------------------------------------------------------------ */
 export function classify(bar: Bar, atr: number, cfg: EngineConfig): CandleClass {
   const range = bar.h - bar.l;
-  if (range <= 0 || range < 0.3 * atr) return "BORING";
+  if (range <= 0 || range < 0.25 * atr) return "BORING";
   const body = Math.abs(bar.c - bar.o);
   const up = bar.h - Math.max(bar.o, bar.c);
   const dn = Math.min(bar.o, bar.c) - bar.l;
-  if (dn >= range * cfg.rejThresh && dn > body) return "LPR";
-  if (up >= range * cfg.rejThresh && up > body) return "HPR";
-  if (body >= 0.68 * range && range >= cfg.powerAtr * atr)
+
+  // Strict wick-to-body & opposing-wick morphology
+  if (dn >= range * cfg.rejThresh && dn > body * 1.35 && up <= range * 0.28) return "LPR";
+  if (up >= range * cfg.rejThresh && up > body * 1.35 && dn <= range * 0.28) return "HPR";
+  if (body >= 0.65 * range && range >= cfg.powerAtr * atr)
     return bar.c > bar.o ? "POWER_BULL" : "POWER_BEAR";
-  if (body <= 0.22 * range) return "BORING"; // doji
+  if (body <= 0.15 * range) return "BORING"; // spinning top / doji
   if (bar.c > bar.o && up >= range * 0.38 && dn < range * 0.18) return "BORING"; // wick fighting momentum
   if (bar.c < bar.o && dn >= range * 0.38 && up < range * 0.18) return "BORING";
   return "NEUTRAL";
@@ -102,92 +113,115 @@ function buildAois(st: EngineState, cfg: EngineConfig, cdhPrev: number, cdlPrev:
   const A: Aoi[] = [];
   const bars = st.bars;
   const n = bars.length;
-  const atr = st.atr;
+  const atr = st.atr || 1.0;
   const close = bars[n - 1].c;
   const dsi = dayStartIndex(bars);
   const barsInDay = n - dsi;
 
+  const dedupSet = new Set<string>();
+  const addZone = (aoi: Aoi) => {
+    const key = `${aoi.role}:${Math.round(aoi.ty / Math.max(0.01, 0.25 * atr))}`;
+    if (!dedupSet.has(key)) {
+      dedupSet.add(key);
+      A.push(aoi);
+    }
+  };
+
   // Type D — PDH / PDL + live CDH / CDL
   if (cfg.aoi.pdh) {
-    if (st.pdh != null) A.push({ kind: "PDH", role: "R", y1: st.pdh, y2: st.pdh, ty: st.pdh, from: dsi, label: "PDH", active: true });
-    if (st.pdl != null) A.push({ kind: "PDL", role: "S", y1: st.pdl, y2: st.pdl, ty: st.pdl, from: dsi, label: "PDL", active: true });
+    if (st.pdh != null) addZone({ kind: "PDH", role: "R", y1: st.pdh, y2: st.pdh, ty: st.pdh, from: dsi, label: "PDH", active: true });
+    if (st.pdl != null) addZone({ kind: "PDL", role: "S", y1: st.pdl, y2: st.pdl, ty: st.pdl, from: dsi, label: "PDL", active: true });
     if (barsInDay >= 10 && cdhPrev > 0) {
-      A.push({ kind: "CDH", role: "R", y1: cdhPrev, y2: cdhPrev, ty: cdhPrev, from: dsi, label: "CDH", active: true });
-      A.push({ kind: "CDL", role: "S", y1: cdlPrev, y2: cdlPrev, ty: cdlPrev, from: dsi, label: "CDL", active: true });
+      addZone({ kind: "CDH", role: "R", y1: cdhPrev, y2: cdhPrev, ty: cdhPrev, from: dsi, label: "CDH", active: true });
+      addZone({ kind: "CDL", role: "S", y1: cdlPrev, y2: cdlPrev, ty: cdlPrev, from: dsi, label: "CDL", active: true });
     }
   }
 
   // Type C — previous-session highs / lows + London–NY overlap
   if (cfg.aoi.session && st.ses) {
     const s = st.ses;
-    A.push({ kind: "LON_H", role: "R", y1: s.lonH, y2: s.lonH, ty: s.lonH, from: dsi, label: "LON HIGH", active: true });
-    A.push({ kind: "LON_L", role: "S", y1: s.lonL, y2: s.lonL, ty: s.lonL, from: dsi, label: "LON LOW", active: true });
-    A.push({ kind: "NY_H", role: "R", y1: s.nyH, y2: s.nyH, ty: s.nyH, from: dsi, label: "NY HIGH", active: true });
-    A.push({ kind: "NY_L", role: "S", y1: s.nyL, y2: s.nyL, ty: s.nyL, from: dsi, label: "NY LOW", active: true });
-    A.push({ kind: "OVL_H", role: "R", y1: s.ovlH, y2: s.ovlH, ty: s.ovlH, from: dsi, label: "OVL HIGH", active: true });
-    A.push({ kind: "OVL_L", role: "S", y1: s.ovlL, y2: s.ovlL, ty: s.ovlL, from: dsi, label: "OVL LOW", active: true });
+    addZone({ kind: "LON_H", role: "R", y1: s.lonH, y2: s.lonH, ty: s.lonH, from: dsi, label: "LON HIGH", active: true });
+    addZone({ kind: "LON_L", role: "S", y1: s.lonL, y2: s.lonL, ty: s.lonL, from: dsi, label: "LON LOW", active: true });
+    addZone({ kind: "NY_H", role: "R", y1: s.nyH, y2: s.nyH, ty: s.nyH, from: dsi, label: "NY HIGH", active: true });
+    addZone({ kind: "NY_L", role: "S", y1: s.nyL, y2: s.nyL, ty: s.nyL, from: dsi, label: "NY LOW", active: true });
+    addZone({ kind: "OVL_H", role: "R", y1: s.ovlH, y2: s.ovlH, ty: s.ovlH, from: dsi, label: "OVL HIGH", active: true });
+    addZone({ kind: "OVL_L", role: "S", y1: s.ovlL, y2: s.ovlL, ty: s.ovlL, from: dsi, label: "OVL LOW", active: true });
   }
 
-  // Type A — triple tops / triple bottoms from confirmed pivots
+  // Type A — triple tops / triple bottoms from confirmed pivots with volume confluence
   if (cfg.aoi.triple) {
-    const ph: { i: number; p: number }[] = [];
-    const pl: { i: number; p: number }[] = [];
+    const ph: { i: number; p: number; v: number }[] = [];
+    const pl: { i: number; p: number; v: number }[] = [];
     const from = Math.max(2, n - 130);
+    const avgVol = bars.slice(Math.max(0, n - 25)).reduce((acc, b) => acc + (b.v || 1), 0) / 25;
+
     for (let i = from; i <= n - 3; i++) {
       const b = bars[i];
-      if (b.h > bars[i - 1].h && b.h > bars[i - 2].h && b.h > bars[i + 1].h && b.h > bars[i + 2].h) ph.push({ i, p: b.h });
-      if (b.l < bars[i - 1].l && b.l < bars[i - 2].l && b.l < bars[i + 1].l && b.l < bars[i + 2].l) pl.push({ i, p: b.l });
+      if (b.h > bars[i - 1].h && b.h > bars[i - 2].h && b.h > bars[i + 1].h && b.h > bars[i + 2].h) {
+        if ((b.v || 1) >= 0.72 * avgVol) ph.push({ i, p: b.h, v: b.v || 1 });
+      }
+      if (b.l < bars[i - 1].l && b.l < bars[i - 2].l && b.l < bars[i + 1].l && b.l < bars[i + 2].l) {
+        if ((b.v || 1) >= 0.72 * avgVol) pl.push({ i, p: b.l, v: b.v || 1 });
+      }
     }
     if (ph.length >= 3) {
       const [p1, p2, p3] = ph.slice(-3);
-      if (p2.i - p1.i >= 4 && p3.i - p2.i >= 4) {
+      if (p2.i - p1.i >= 3 && p3.i - p2.i >= 3) {
         const mx = Math.max(p1.p, p2.p, p3.p);
         const mn = Math.min(p1.p, p2.p, p3.p);
         if (mx - mn <= (close * cfg.tripleTol) / 100) {
           let dead = false;
           for (let j = p3.i + 2; j < n; j++) if (bars[j].c > mx + 0.45 * atr) { dead = true; break; }
-          if (!dead) A.push({ kind: "TT", role: "R", y1: mn, y2: mx, ty: mx, from: p1.i, label: "TRIPLE TOP", active: true });
+          if (!dead) addZone({ kind: "TT", role: "R", y1: mn, y2: mx, ty: mx, from: p1.i, label: "TRIPLE TOP", active: true });
         }
       }
     }
     if (pl.length >= 3) {
       const [p1, p2, p3] = pl.slice(-3);
-      if (p2.i - p1.i >= 4 && p3.i - p2.i >= 4) {
+      if (p2.i - p1.i >= 3 && p3.i - p2.i >= 3) {
         const mx = Math.max(p1.p, p2.p, p3.p);
         const mn = Math.min(p1.p, p2.p, p3.p);
         if (mx - mn <= (close * cfg.tripleTol) / 100) {
           let dead = false;
           for (let j = p3.i + 2; j < n; j++) if (bars[j].c < mn - 0.45 * atr) { dead = true; break; }
-          if (!dead) A.push({ kind: "TB", role: "S", y1: mn, y2: mx, ty: mn, from: p1.i, label: "TRIPLE BOTTOM", active: true });
+          if (!dead) addZone({ kind: "TB", role: "S", y1: mn, y2: mx, ty: mn, from: p1.i, label: "TRIPLE BOTTOM", active: true });
         }
       }
     }
   }
 
-  // Type B — order blocks anchored to fair value gaps
+  // Type B — multi-bar (3-candle) order blocks anchored to valid fair value gaps
   if (cfg.aoi.ob) {
     let dCount = 0, sCount = 0;
     for (let i = n - 3; i >= Math.max(2, n - 90); i--) {
       if (dCount >= 2 && sCount >= 2) break;
-      const b = bars[i];
-      const a = bars[i - 2];
-      if (b.l > a.h) {
-        // bullish FVG → candle i-2 is the demand order block
+      const b = bars[i];     // Candle 3
+      const a = bars[i - 2]; // Candle 1 (Order Block origin)
+      const gapMin = 0.10 * atr;
+
+      if (b.l > a.h + gapMin) {
+        // Bullish 3-bar FVG → candle i-2 is the demand order block
         const y1 = Math.min(a.o, a.c);
         const y2 = Math.max(a.o, a.c);
-        if (dCount < 2 && y2 <= close - 0.15 * atr && y2 - y1 <= 3.2 * atr && y2 - y1 >= 0.15) {
+        if (dCount < 2 && y2 <= close - 0.12 * atr && y2 - y1 <= 3.5 * atr && y2 - y1 >= 0.12) {
           let mit = false;
           for (let j = i; j < n; j++) if (bars[j].c < y1) { mit = true; break; }
-          if (!mit) { A.push({ kind: "OB_D", role: "S", y1, y2, ty: y1, from: i - 2, label: "DEMAND OB", active: true }); dCount++; }
+          if (!mit) {
+            addZone({ kind: "OB_D", role: "S", y1, y2, ty: y1, from: i - 2, label: "DEMAND OB", active: true });
+            dCount++;
+          }
         }
-      } else if (b.h < a.l) {
-        // bearish FVG → candle i-2 is the supply order block
+      } else if (b.h < a.l - gapMin) {
+        // Bearish 3-bar FVG → candle i-2 is the supply order block
         const y1 = Math.min(a.o, a.c);
         const y2 = Math.max(a.o, a.c);
-        if (sCount < 2 && y1 >= close + 0.15 * atr && y2 - y1 <= 3.2 * atr && y2 - y1 >= 0.15) {
+        if (sCount < 2 && y1 >= close + 0.12 * atr && y2 - y1 <= 3.5 * atr && y2 - y1 >= 0.12) {
           let mit = false;
           for (let j = i; j < n; j++) if (bars[j].c > y2) { mit = true; break; }
-          if (!mit) { A.push({ kind: "OB_S", role: "R", y1, y2, ty: y2, from: i - 2, label: "SUPPLY OB", active: true }); sCount++; }
+          if (!mit) {
+            addZone({ kind: "OB_S", role: "R", y1, y2, ty: y2, from: i - 2, label: "SUPPLY OB", active: true });
+            sCount++;
+          }
         }
       }
     }
@@ -215,14 +249,19 @@ function buildAois(st: EngineState, cfg: EngineConfig, cdhPrev: number, cdlPrev:
 function settle(st: EngineState, cfg: EngineConfig, t: Trade, bar: Bar, outcome: "TP" | "SL", px: number) {
   const idx = st.bars.length - 1;
   const dir = t.side === "LONG" ? 1 : -1;
-  const pnl = dir * t.oz * (px - t.entry);
+  // Account for realistic execution slippage
+  const slippage = (cfg.slippagePoints || 0.15) * (st.regime === "LIQUIDITY_HUNT" ? 1.5 : 1.0);
+  const realizedPx = outcome === "TP" ? px - (dir === 1 ? slippage : -slippage) : px + (dir === 1 ? -slippage : slippage);
+  const pnl = dir * t.oz * (realizedPx - t.entry);
+
   t.open = false;
   t.outcome = outcome;
-  t.exit = px;
+  t.exit = realizedPx;
   t.exitIndex = idx;
   t.exitTime = bar.t;
   t.pnl = pnl;
-  t.r = pnl / t.risk;
+  t.slippage = slippage;
+  t.r = pnl / Math.max(1, t.risk);
   st.balance += pnl;
   st.open = null;
 
@@ -245,27 +284,42 @@ function manage(st: EngineState, cfg: EngineConfig, bar: Bar) {
   const t = st.open;
   if (!t) return;
   const half = cfg.spread / 2;
+  const atr = st.atr || 1.0;
+
+  // 1. Check Exit conditions (SL and TP)
   if (t.side === "LONG") {
-    // longs exit on the BID — the spread works against you both ways
-    if (bar.l - half <= t.sl) settle(st, cfg, t, bar, "SL", t.sl);
-    else if (bar.h - half >= t.tp) settle(st, cfg, t, bar, "TP", t.tp);
+    if (bar.l - half <= t.sl) {
+      settle(st, cfg, t, bar, "SL", t.sl);
+      return;
+    }
+    if (bar.h - half >= t.tp) {
+      settle(st, cfg, t, bar, "TP", t.tp);
+      return;
+    }
   } else {
-    // shorts exit on the ASK
-    if (bar.h + half >= t.sl) settle(st, cfg, t, bar, "SL", t.sl);
-    else if (bar.l + half <= t.tp) settle(st, cfg, t, bar, "TP", t.tp);
+    if (bar.h + half >= t.sl) {
+      settle(st, cfg, t, bar, "SL", t.sl);
+      return;
+    }
+    if (bar.l + half <= t.tp) {
+      settle(st, cfg, t, bar, "TP", t.tp);
+      return;
+    }
   }
 
-  // Auto-Breakeven trigger if trade remains open
-  if (st.open && cfg.autoBreakeven && !st.open.isBreakeven) {
+  // 2. Trailing Stop & Auto-Breakeven Automation if trade remains open
+  if (st.open) {
     const curTrade = st.open;
     const curPrice = bar.c;
     const upnl = curTrade.side === "LONG"
       ? curTrade.oz * (curPrice - half - curTrade.entry)
       : curTrade.oz * (curTrade.entry - (curPrice + half));
-    const currentR = upnl / curTrade.risk;
+    const currentR = upnl / Math.max(1, curTrade.risk);
 
-    if (currentR >= (cfg.beThresholdR || 1.0)) {
-      const beSl = curTrade.side === "LONG" ? curTrade.entry + half : curTrade.entry - half;
+    // Auto-Breakeven at threshold (default +1.0R)
+    if (cfg.autoBreakeven && !curTrade.isBreakeven && currentR >= (cfg.beThresholdR || 1.0)) {
+      const buffer = Math.max(0.04 * atr, 0.10);
+      const beSl = curTrade.side === "LONG" ? curTrade.entry + half + buffer : curTrade.entry - (half + buffer);
       curTrade.sl = beSl;
       curTrade.isBreakeven = true;
       ev(
@@ -276,6 +330,26 @@ function manage(st: EngineState, cfg: EngineConfig, bar: Bar) {
         `⚡ Auto-Breakeven locked (+${currentR.toFixed(1)}R) · Stop moved to entry ${fmtP(beSl)}`
       );
     }
+
+    // Dynamic ATR Trailing Stop (activates once trade surpasses trailThresholdR, e.g. +1.5R)
+    if (cfg.trailingStop && currentR >= (cfg.trailThresholdR || 1.5)) {
+      const trailDist = (cfg.trailAtrDist || 1.0) * atr;
+      if (curTrade.side === "LONG") {
+        const potentialSl = curPrice - half - trailDist;
+        if (potentialSl > curTrade.sl) {
+          curTrade.sl = potentialSl;
+          curTrade.trailActive = true;
+          curTrade.trailSl = potentialSl;
+        }
+      } else {
+        const potentialSl = curPrice + half + trailDist;
+        if (potentialSl < curTrade.sl) {
+          curTrade.sl = potentialSl;
+          curTrade.trailActive = true;
+          curTrade.trailSl = potentialSl;
+        }
+      }
+    }
   }
 }
 
@@ -283,7 +357,9 @@ export function moveToBreakeven(st: EngineState, cfg: EngineConfig): boolean {
   if (!st.open) return false;
   const t = st.open;
   const half = cfg.spread / 2;
-  const beSl = t.side === "LONG" ? t.entry + half : t.entry - half;
+  const atr = st.atr || 1.0;
+  const buffer = Math.max(0.04 * atr, 0.10);
+  const beSl = t.side === "LONG" ? t.entry + half + buffer : t.entry - (half + buffer);
   t.sl = beSl;
   t.isBreakeven = true;
   const bar = st.bars[st.bars.length - 1];
@@ -330,18 +406,37 @@ interface TradePlan {
   slDist: number;
 }
 
-/** size a trade against the current bar — returns null on degenerate geometry */
-function planTrade(cfg: EngineConfig, bar: Bar, side: "LONG" | "SHORT", atr: number): TradePlan | null {
+/** size a trade against current bar and risk model (fixedUSD, percentEquity, fractionalKelly) */
+function planTrade(st: EngineState, cfg: EngineConfig, bar: Bar, side: "LONG" | "SHORT", atr: number): TradePlan | null {
   const half = cfg.spread / 2;
-  // fills pay the spread: longs buy the ask, shorts sell the bid
   const entry = side === "LONG" ? bar.c + half : bar.c - half;
   const buffer = Math.max(0.12 * atr, 0.25);
   const sl = side === "LONG" ? bar.l - buffer : bar.h + buffer;
   const slDist = Math.abs(entry - sl);
-  if (slDist < 0.15 * atr || slDist > 4.5 * atr) return null; // reject degenerate geometry
-  // Position size = risk ÷ (stop distance × point value per unit) — explicit, never assumed
-  const oz = Math.min(cfg.riskUSD / (slDist * cfg.pointValue), 300);
-  const risk = oz * slDist * cfg.pointValue; // recompute after the size cap
+
+  const minSl = (cfg.minSlAtr || 0.2) * atr;
+  const maxSl = (cfg.maxSlAtr || 4.0) * atr;
+  if (slDist < minSl || slDist > maxSl) return null; // reject degenerate geometry
+
+  // Dynamic Risk Sizing Calculation
+  let targetRiskUSD = cfg.riskUSD;
+  if (cfg.sizingMode === "percentEquity") {
+    targetRiskUSD = Math.max(25, st.balance * ((cfg.equityRiskPct || 2.0) / 100));
+  } else if (cfg.sizingMode === "fractionalKelly") {
+    const closed = st.trades.filter((t) => !t.open);
+    const wins = closed.filter((t) => (t.pnl ?? 0) > 0).length;
+    const p = closed.length >= 8 ? wins / closed.length : 0.48;
+    const b = Math.max(1.0, cfg.rr);
+    const rawKelly = p - (1 - p) / b;
+    const kellyPct = Math.max(0.005, Math.min(0.035, rawKelly * (cfg.kellyFraction || 0.35)));
+    targetRiskUSD = Math.max(25, st.balance * kellyPct);
+  }
+
+  // Sizing = targetRisk ÷ (stop distance × point value per unit) with margin safety cap
+  const marginCapUnits = (st.balance * 25) / Math.max(1, bar.c * cfg.pointValue);
+  const rawOz = targetRiskUSD / (slDist * cfg.pointValue);
+  const oz = Math.max(0.01, Math.min(rawOz, marginCapUnits));
+  const risk = oz * slDist * cfg.pointValue;
   const tp = side === "LONG" ? entry + slDist * cfg.rr : entry - slDist * cfg.rr;
   return { entry, sl, tp, oz, risk, slDist };
 }
@@ -356,12 +451,11 @@ function openTrade(
   familyOverride?: string
 ) {
   const idx = st.bars.length - 1;
-  const plan = planTrade(cfg, bar, side, st.atr);
+  const plan = planTrade(st, cfg, bar, side, st.atr);
   if (!plan) return false;
-  // capital guard — never risk money the account doesn't have (no open position at entry)
-  if (st.balance < cfg.riskUSD) {
+  if (st.balance < plan.risk * 0.5) {
     ev(st, bar.t, "RISK", "risk",
-      `Equity $${st.balance.toFixed(0)} below $${cfg.riskUSD} risk — cannot size a position. Standing down to protect capital.`);
+      `Equity $${st.balance.toFixed(0)} below required risk — standing down to protect capital.`);
     return false;
   }
   const { entry, sl, tp, oz, risk, slDist } = plan;
@@ -387,15 +481,12 @@ function openTrade(
   st.cooldown[cooldownKey] = idx;
 
   ev(st, bar.t, "ENTRY", side === "LONG" ? "long" : "short",
-    `${side} ${oz.toFixed(1)} oz @ ${fmtP(entry)} (spread ${cfg.spread.toFixed(2)}) · ${setup}`);
+    `${side} ${oz.toFixed(2)} units @ ${fmtP(entry)} · ${setup}`);
   ev(st, bar.t, "RISK", "risk",
-    `Risk locked $${risk.toFixed(0)} · stop ${fmtP(sl)} ($${slDist.toFixed(2)}) · ${oz.toFixed(1)} oz @ $${cfg.pointValue.toFixed(2)}/oz pv · TP ${fmtP(tp)} (${cfg.rr.toFixed(1)}R)`);
+    `Risk locked $${risk.toFixed(0)} (${cfg.sizingMode}) · stop ${fmtP(sl)} ($${slDist.toFixed(2)}) · TP ${fmtP(tp)} (${cfg.rr.toFixed(1)}R)`);
   return true;
 }
 
-/* ------------------------------------------------------------------ */
-/*  Action Center — supervised execution queue                         */
-/* ------------------------------------------------------------------ */
 function enqueueSignal(
   st: EngineState,
   cfg: EngineConfig,
@@ -405,12 +496,11 @@ function enqueueSignal(
   cooldownKey: string
 ): boolean {
   if (st.queue.some((q) => q.status === "PENDING")) return false; // one decision at a time
-  const plan = planTrade(cfg, bar, side, st.atr);
+  const plan = planTrade(st, cfg, bar, side, st.atr);
   if (!plan) return false;
-  // capital guard — don't queue a signal the account can't afford to take
-  if (st.balance < cfg.riskUSD) {
+  if (st.balance < plan.risk * 0.5) {
     ev(st, bar.t, "RISK", "risk",
-      `Equity $${st.balance.toFixed(0)} below $${cfg.riskUSD} risk — signal suppressed, capital protection first.`);
+      `Equity $${st.balance.toFixed(0)} below risk sizing — signal suppressed.`);
     return false;
   }
   const idx = st.bars.length - 1;
@@ -802,10 +892,10 @@ export function advance(st: EngineState, cfg: EngineConfig) {
     st.halted = false;
   }
 
-  // ATR
+  // 14-Period Wilder RMA ATR
   const prevC = idx > 0 ? st.bars[idx - 1].c : bar.o;
   const tr = Math.max(bar.h - bar.l, Math.abs(bar.h - prevC), Math.abs(bar.l - prevC));
-  st.atr = st.atr > 0 ? st.atr * 0.92 + tr * 0.08 : tr;
+  st.atr = st.atr > 0 ? (st.atr * 13 + tr) / 14 : tr;
 
   const cls = classify(bar, st.atr, cfg);
   st.classes.push(cls);
@@ -847,6 +937,8 @@ export function createEngine(seed: number, cfg: EngineConfig): EngineState {
     bars: [],
     classes: [],
     atr: 0,
+    atrPeriod: 14,
+    timeframeAtrs: {},
     balance: cfg.account,
     startDay: -1,
     dayKey: -1,
@@ -878,6 +970,8 @@ export function createEngine(seed: number, cfg: EngineConfig): EngineState {
     liveLatency: 0,
     liveLastBarTime: 0,
     rng: mulberry32(seed),
+    regime: "RANGING_CHOP",
+    regimeBarsLeft: 12,
     trend: 0,
     nextT: BASE_T,
     price: basePrice,
@@ -903,6 +997,8 @@ export function createLiveEngine(symbol: string, initialBars: Bar[], cfg: Engine
     bars: [],
     classes: [],
     atr: 0,
+    atrPeriod: 14,
+    timeframeAtrs: {},
     balance: cfg.account,
     startDay: -1,
     dayKey: -1,
@@ -934,6 +1030,8 @@ export function createLiveEngine(symbol: string, initialBars: Bar[], cfg: Engine
     liveLatency: 24,
     liveLastBarTime: lastBar ? lastBar.t : Date.now(),
     rng: mulberry32(1337),
+    regime: "RANGING_CHOP",
+    regimeBarsLeft: 12,
     trend: 0,
     nextT: Date.now(),
     price: lastClose,
@@ -967,7 +1065,7 @@ export function createLiveEngine(symbol: string, initialBars: Bar[], cfg: Engine
 
     const prevC = idx > 0 ? st.bars[idx - 1].c : b.o;
     const tr = Math.max(b.h - b.l, Math.abs(b.h - prevC), Math.abs(b.l - prevC));
-    st.atr = st.atr > 0 ? st.atr * 0.92 + tr * 0.08 : tr;
+    st.atr = st.atr > 0 ? (st.atr * 13 + tr) / 14 : tr;
 
     const cls = classify(b, st.atr, warmCfg);
     st.classes.push(cls);

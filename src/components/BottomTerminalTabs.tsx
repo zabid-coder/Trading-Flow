@@ -192,9 +192,14 @@ export default function BottomTerminalTabs({
                       <td className="py-2.5 font-semibold text-[var(--gold-hi)]">{fmtP(lastPrice)}</td>
                       <td className="py-2.5 font-semibold text-[var(--short)]">
                         {fmtP(openTrade.sl)}
-                        {openTrade.isBreakeven && (
+                        {openTrade.isBreakeven && !openTrade.trailActive && (
                           <span className="ml-1 text-[8px] px-1 py-px rounded bg-[var(--gold)]/20 text-[var(--gold)] font-bold">
                             BE
+                          </span>
+                        )}
+                        {openTrade.trailActive && (
+                          <span className="ml-1 text-[8px] px-1 py-px rounded bg-blue-500/20 text-blue-400 font-bold animate-pulse">
+                            TRAIL
                           </span>
                         )}
                       </td>

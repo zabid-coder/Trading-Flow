@@ -67,6 +67,9 @@ export interface Trade {
   partialClosed?: boolean;
   partialRealized?: number;
   notes?: string;
+  slippage?: number;
+  trailActive?: boolean;
+  trailSl?: number;
 }
 
 export interface EngineEvent {
@@ -211,6 +214,8 @@ export interface AoiFlags {
   session: boolean;
 }
 
+export type SizingMode = "fixedUSD" | "percentEquity" | "fractionalKelly";
+
 export interface EngineConfig {
   identity: "reversal" | "breakout";
   account: number;
@@ -234,6 +239,15 @@ export interface EngineConfig {
   autoBreakeven: boolean;
   beThresholdR: number;
   soundEnabled: boolean;
+  sizingMode: SizingMode;
+  equityRiskPct: number; // e.g. 2.0 = 2%
+  kellyFraction: number; // e.g. 0.35 = 35% Kelly
+  trailingStop: boolean;
+  trailThresholdR: number; // e.g. 1.5R before trailing activates
+  trailAtrDist: number; // e.g. 1.0 ATR trailing cushion
+  slippagePoints: number; // e.g. 0.15 = 15 cents / 1.5 pips
+  minSlAtr: number; // min SL distance multiple of ATR (default 0.2)
+  maxSlAtr: number; // max SL distance multiple of ATR (default 4.0)
 }
 
 export interface SessionLevels {
@@ -245,11 +259,15 @@ export interface SessionLevels {
   ovlL: number;
 }
 
+export type MarketRegime = "TRENDING_BULL" | "TRENDING_BEAR" | "RANGING_CHOP" | "LIQUIDITY_HUNT";
+
 export interface EngineState {
   seed: number;
   bars: Bar[];
   classes: CandleClass[];
   atr: number;
+  atrPeriod: number;
+  timeframeAtrs: Record<string, number>;
   balance: number;
   startDay: number;
   dayKey: number;
@@ -278,6 +296,8 @@ export interface EngineState {
   liveLastBarTime: number;
   // market generator internals
   rng: () => number;
+  regime: MarketRegime;
+  regimeBarsLeft: number;
   trend: number;
   nextT: number;
   price: number;
