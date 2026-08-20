@@ -43,20 +43,18 @@ export default function StrategyRadar({ st, cfg, onCfg }: Props) {
 
   return (
     <div
-      className="rounded-lg border overflow-hidden shadow-lg font-mono text-[11px] flex flex-col"
-      style={{ borderColor: "var(--line)", background: "var(--bg1)" }}
+      className="glass-panel overflow-hidden shadow-2xl font-mono text-[11px] flex flex-col border border-white/10"
     >
       {/* Header */}
       <div
-        className="flex items-center justify-between border-b px-3 py-2"
-        style={{ borderColor: "var(--line)", background: "var(--bg2)" }}
+        className="flex items-center justify-between border-b px-3 py-2 border-white/10 bg-black/40"
       >
         <div className="flex items-center gap-2">
           <span className="h-2 w-2 rounded-full bg-[var(--gold)] animate-ping" />
-          <span className="font-bold text-white text-[11.5px]">STRATEGY RADAR & INSPECTOR</span>
+          <span className="font-extrabold text-white text-[11.5px] tracking-wider">STRATEGY RADAR & INSPECTOR</span>
         </div>
         <span
-          className="px-1.5 py-0.5 rounded text-[9px] font-bold"
+          className="px-2 py-0.5 rounded text-[9px] font-bold"
           style={{
             background: cfg.identity === "reversal" ? "rgba(47,201,143,0.15)" : "rgba(232,180,76,0.15)",
             color: cfg.identity === "reversal" ? "var(--long)" : "var(--gold)",

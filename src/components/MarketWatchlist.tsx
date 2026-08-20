@@ -10,20 +10,18 @@ interface Props {
 export default function MarketWatchlist({ activeSymbol, onSelect, price, feedMode }: Props) {
   return (
     <div
-      className="rounded-lg border overflow-hidden shadow-lg font-mono text-[11px] flex flex-col h-full"
-      style={{ borderColor: "var(--line)", background: "var(--bg1)" }}
+      className="glass-panel overflow-hidden shadow-2xl font-mono text-[11px] flex flex-col h-full border border-white/10"
     >
       {/* Header */}
       <div
-        className="flex items-center justify-between border-b px-3 py-2"
-        style={{ borderColor: "var(--line)", background: "var(--bg2)" }}
+        className="flex items-center justify-between border-b px-3 py-2 border-white/10 bg-black/40"
       >
-        <span className="font-bold text-white text-[11px] tracking-wider">MARKET WATCH</span>
+        <span className="font-extrabold text-white text-[11px] tracking-wider">MARKET WATCH</span>
         <span
           className="text-[8.5px] px-1.5 py-0.5 rounded font-extrabold"
           style={{
-            background: feedMode === "live" ? "rgba(47,201,143,0.15)" : "rgba(232,180,76,0.15)",
-            color: feedMode === "live" ? "var(--long)" : "var(--gold)",
+            background: feedMode === "live" ? "rgba(47,201,143,0.18)" : "rgba(232,180,76,0.18)",
+            color: feedMode === "live" ? "var(--long)" : "var(--gold-hi)",
           }}
         >
           {feedMode === "live" ? "LIVE" : "SIM"}

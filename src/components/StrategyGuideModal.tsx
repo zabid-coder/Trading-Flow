@@ -7,18 +7,18 @@ export default function StrategyGuideModal({ isOpen, onClose }: Props) {
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm animate-fade-in font-mono text-[11.5px]">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4 backdrop-blur-md animate-fade-in font-mono text-[11.5px]">
       <div
-        className="w-full max-w-3xl rounded-lg border p-6 shadow-2xl space-y-4 max-h-[85vh] overflow-y-auto"
-        style={{ background: "var(--bg)", borderColor: "var(--line)", color: "var(--ink)" }}
+        className="w-full max-w-3xl rounded-xl border p-6 shadow-2xl space-y-4 max-h-[85vh] overflow-y-auto glass-panel border-white/15"
+        style={{ color: "var(--ink)" }}
       >
         {/* Header */}
-        <div className="flex items-center justify-between border-b pb-3" style={{ borderColor: "var(--line)" }}>
+        <div className="flex items-center justify-between border-b pb-3 border-white/10">
           <div className="flex items-center gap-2">
             <span className="flex h-5 w-5 items-center justify-center rounded-full bg-[var(--gold)] text-black text-[11px] font-black">
               ?
             </span>
-            <h2 className="text-sm font-bold tracking-wider text-[var(--gold)]">
+            <h2 className="text-sm font-bold tracking-wider text-[var(--gold-hi)]">
               TRADING FLOW · STRATEGY PLAYBOOK & EXECUTION GUIDE
             </h2>
           </div>

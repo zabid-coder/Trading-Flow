@@ -21,9 +21,12 @@ function niceStep(span: number) {
 interface Props {
   st: EngineState;
   cfg: EngineConfig;
+  onDecide?: (id: number, approve: boolean) => void;
+  onMoveToBreakeven?: () => void;
+  onPartialClose?: (ratio?: number) => void;
 }
 
-export default function CandleChart({ st, cfg }: Props) {
+export default function CandleChart({ st, cfg, onDecide, onMoveToBreakeven, onPartialClose }: Props) {
   const svgRef = useRef<SVGSVGElement>(null);
   const tvContainerRef = useRef<HTMLDivElement>(null);
   const [hover, setHover] = useState<{ i: number; y: number } | null>(null);
@@ -367,6 +370,168 @@ export default function CandleChart({ st, cfg }: Props) {
             )}
           </svg>
         )}
+
+        {/* 1-Click Floating In-Chart Signal Decision HUD */}
+        {cfg.chartView === "native" && onDecide && (() => {
+          const pending = st.queue.filter((q) => q.status === "PENDING");
+          if (pending.length === 0) return null;
+          const topPending = pending[0];
+          const lastIdx = st.bars.length - 1;
+          const barsLeft = Math.max(0, 4 - (lastIdx - topPending.entryIndex));
+          const isLong = topPending.side === "LONG";
+
+          return (
+            <div
+              className="absolute top-4 right-20 z-20 flex flex-col gap-2 rounded-xl p-3.5 shadow-2xl glass-panel animate-slide-in select-none min-w-[280px]"
+              style={{
+                borderColor: isLong ? "rgba(47,201,143,0.5)" : "rgba(240,84,108,0.5)",
+                boxShadow: isLong ? "0 0 24px rgba(47,201,143,0.2)" : "0 0 24px rgba(240,84,108,0.2)",
+              }}
+            >
+              <div className="flex items-center justify-between gap-2 border-b border-white/10 pb-2">
+                <div className="flex items-center gap-1.5">
+                  <span
+                    className="rounded px-2 py-0.5 font-mono text-[10px] font-black tracking-wider"
+                    style={{
+                      background: isLong ? "rgba(47,201,143,0.2)" : "rgba(240,84,108,0.2)",
+                      color: isLong ? "var(--long)" : "var(--short)",
+                      border: `1px solid ${isLong ? "rgba(47,201,143,0.6)" : "rgba(240,84,108,0.6)"}`,
+                    }}
+                  >
+                    {topPending.side}
+                  </span>
+                  <span className="font-mono text-[11px] font-bold text-white tracking-tight">{topPending.setup}</span>
+                </div>
+                <span className="font-mono text-[9.5px] font-bold text-[var(--gold-hi)] bg-[var(--gold)]/10 px-1.5 py-0.5 rounded">
+                  {barsLeft} BAR{barsLeft === 1 ? "" : "S"} LEFT
+                </span>
+              </div>
+
+              <div className="grid grid-cols-3 gap-2 font-mono text-[10.5px] my-0.5">
+                <div>
+                  <span className="text-[8px] text-[var(--dim)] block tracking-widest">ENTRY</span>
+                  <span className="font-bold text-white">{fmtP(topPending.entry, activeMeta.digits)}</span>
+                </div>
+                <div>
+                  <span className="text-[8px] text-[var(--dim)] block tracking-widest">STOP</span>
+                  <span className="font-bold text-[var(--short)]">{fmtP(topPending.sl, activeMeta.digits)}</span>
+                </div>
+                <div>
+                  <span className="text-[8px] text-[var(--dim)] block tracking-widest">TARGET</span>
+                  <span className="font-bold text-[var(--long)]">{fmtP(topPending.tp, activeMeta.digits)}</span>
+                </div>
+              </div>
+
+              {/* Progress countdown */}
+              <div className="h-1 w-full bg-white/10 rounded-full overflow-hidden">
+                <div
+                  className="h-full rounded-full transition-all duration-300"
+                  style={{
+                    width: `${(barsLeft / 4) * 100}%`,
+                    background: barsLeft <= 1 ? "var(--short)" : "var(--gold)",
+                  }}
+                />
+              </div>
+
+              <div className="flex items-center gap-2 pt-1">
+                <button
+                  onClick={() => onDecide(topPending.id, true)}
+                  className="flex-1 rounded-lg py-2 font-mono text-[11px] font-extrabold tracking-wider tactile-btn flex items-center justify-center gap-1.5"
+                  style={{
+                    background: "rgba(47,201,143,0.22)",
+                    color: "var(--long)",
+                    border: "1px solid rgba(47,201,143,0.7)",
+                    boxShadow: "0 0 14px rgba(47,201,143,0.25)",
+                  }}
+                >
+                  <span>✓</span>
+                  <span>{cfg.feedMode === "live" ? "DISPATCH" : "APPROVE"}</span>
+                </button>
+                <button
+                  onClick={() => onDecide(topPending.id, false)}
+                  className="rounded-lg px-3 py-2 font-mono text-[11px] font-bold tracking-wider tactile-btn"
+                  style={{
+                    background: "rgba(240,84,108,0.18)",
+                    color: "var(--short)",
+                    border: "1px solid rgba(240,84,108,0.6)",
+                  }}
+                >
+                  ✕ SKIP
+                </button>
+              </div>
+            </div>
+          );
+        })()}
+
+        {/* Live In-Chart Floating Position Control Pill */}
+        {cfg.chartView === "native" && st.open && (() => {
+          const t = st.open;
+          const half = cfg.spread / 2;
+          const lastBar = st.bars[st.bars.length - 1];
+          const curPrice = lastBar ? lastBar.c : t.entry;
+          const upnl = t.side === "LONG"
+            ? t.oz * (curPrice - half - t.entry)
+            : t.oz * (t.entry - (curPrice + half));
+          const currentR = upnl / Math.max(1, t.risk);
+          const isWinning = upnl >= 0;
+
+          return (
+            <div
+              className="absolute top-4 left-4 z-20 flex items-center gap-3 rounded-xl px-3 py-2 shadow-2xl glass-panel animate-slide-in select-none border border-white/15"
+              style={{
+                boxShadow: isWinning ? "0 0 20px rgba(47,201,143,0.2)" : "0 0 20px rgba(240,84,108,0.2)",
+              }}
+            >
+              <div className="flex items-center gap-2">
+                <span
+                  className="rounded px-1.5 py-0.5 font-mono text-[9px] font-black tracking-wider"
+                  style={{
+                    background: t.side === "LONG" ? "rgba(47,201,143,0.2)" : "rgba(240,84,108,0.2)",
+                    color: t.side === "LONG" ? "var(--long)" : "var(--short)",
+                    border: `1px solid ${t.side === "LONG" ? "rgba(47,201,143,0.5)" : "rgba(240,84,108,0.5)"}`,
+                  }}
+                >
+                  {t.side}
+                </span>
+                <div>
+                  <span className="text-[8.5px] text-[var(--dim)] font-mono block">FLOATING P&L</span>
+                  <span className={`font-mono text-[13px] font-extrabold ${isWinning ? "text-[var(--long)]" : "text-[var(--short)]"}`}>
+                    {isWinning ? "+" : ""}${upnl.toFixed(0)} ({isWinning ? "+" : ""}{currentR.toFixed(2)}R)
+                  </span>
+                </div>
+              </div>
+
+              <div className="h-6 w-px bg-white/10" />
+
+              {/* Quick Actions */}
+              <div className="flex items-center gap-1.5">
+                {onMoveToBreakeven && !t.isBreakeven && (
+                  <button
+                    onClick={onMoveToBreakeven}
+                    className="rounded-lg px-2.5 py-1 text-[10px] font-mono font-bold text-[var(--gold-hi)] bg-[var(--gold)]/15 border border-[var(--gold)]/40 hover:bg-[var(--gold)]/25 tactile-btn"
+                    title="Move stop loss to entry price + spread buffer"
+                  >
+                    ⚡ BE
+                  </button>
+                )}
+                {t.isBreakeven && (
+                  <span className="rounded px-1.5 py-0.5 text-[8.5px] font-mono font-bold text-[var(--long)] bg-[var(--long)]/10 border border-[var(--long)]/30">
+                    BE LOCKED
+                  </span>
+                )}
+                {onPartialClose && !t.partialClosed && (
+                  <button
+                    onClick={() => onPartialClose(0.5)}
+                    className="rounded-lg px-2.5 py-1 text-[10px] font-mono font-bold text-white bg-white/10 border border-white/20 hover:bg-white/20 tactile-btn"
+                    title="Realize 50% profit immediately"
+                  >
+                    💰 50%
+                  </button>
+                )}
+              </div>
+            </div>
+          );
+        })()}
 
         {/* Hover Tooltip */}
         {cfg.chartView === "native" && hover && hoverBar && (

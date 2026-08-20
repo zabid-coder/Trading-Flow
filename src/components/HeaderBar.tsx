@@ -60,19 +60,32 @@ export default function HeaderBar({
   const buyPrice = last.c + halfSpread;
   const spreadPoints = (cfg.spread * (activeMeta.digits === 5 ? 10000 : 100)).toFixed(1);
 
+  // Live account metrics
+  const floatingPnl = st.open
+    ? (st.open.side === "LONG"
+        ? st.open.oz * (last.c - halfSpread - st.open.entry)
+        : st.open.oz * (st.open.entry - (last.c + halfSpread)))
+    : 0;
+  const currentEquity = st.balance + floatingPnl;
+  const closedTrades = st.trades.filter((t) => !t.open);
+  const winCount = closedTrades.filter((t) => t.outcome === "TP" || (t.pnl ?? 0) > 0).length;
+  const winRate = closedTrades.length > 0 ? (winCount / closedTrades.length) * 100 : 0;
+  const totalRealizedPnl = closedTrades.reduce((acc, t) => acc + (t.pnl ?? 0), 0);
+
   return (
     <header
       className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 border-b px-3 py-2 lg:px-4 font-mono select-none"
       style={{
-        borderColor: "var(--line)",
-        background: "linear-gradient(180deg, #121927 0%, #0c121e 100%)",
+        borderColor: "rgba(255, 255, 255, 0.08)",
+        background: "rgba(10, 15, 24, 0.88)",
+        backdropFilter: "blur(16px)",
       }}
     >
-      {/* 1. Left: Brand & Instrument + Timeframe Selector (TradingView / OANDA Style) */}
+      {/* 1. Left: Brand & Live Account Stats Pill */}
       <div className="flex items-center gap-3">
         {/* Brand logo */}
-        <div className="flex items-center gap-2 pr-2 border-r border-[var(--line)]">
-          <span className="flex h-7 w-7 items-center justify-center rounded-md bg-[var(--gold)]/15 border border-[var(--gold)] text-[var(--gold)] font-extrabold text-sm">
+        <div className="flex items-center gap-2 pr-2 border-r border-[rgba(255,255,255,0.08)]">
+          <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-[var(--gold)]/15 border border-[var(--gold)]/40 text-[var(--gold)] font-extrabold text-sm shadow-[0_0_12px_rgba(232,180,76,0.2)]">
             TF
           </span>
           <span className="font-bold text-sm tracking-wide text-white hidden md:inline">
@@ -80,8 +93,28 @@ export default function HeaderBar({
           </span>
         </div>
 
+        {/* Live Balance & Equity Glass Badge */}
+        <div className="flex items-center gap-3 bg-[#0d1424]/90 border border-white/10 rounded-lg px-2.5 py-1 text-[11px] shadow-sm">
+          <div>
+            <span className="text-[8.5px] text-[var(--dim)] font-semibold tracking-wider block">EQUITY</span>
+            <span className="font-bold text-white">${currentEquity.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+          </div>
+          <div className="h-6 w-px bg-white/10" />
+          <div>
+            <span className="text-[8.5px] text-[var(--dim)] font-semibold tracking-wider block">P&L (ALL)</span>
+            <span className={`font-bold ${totalRealizedPnl + floatingPnl >= 0 ? "text-[var(--long)]" : "text-[var(--short)]"}`}>
+              {totalRealizedPnl + floatingPnl >= 0 ? "+" : ""}${(totalRealizedPnl + floatingPnl).toFixed(0)}
+            </span>
+          </div>
+          <div className="h-6 w-px bg-white/10 hidden sm:block" />
+          <div className="hidden sm:block">
+            <span className="text-[8.5px] text-[var(--dim)] font-semibold tracking-wider block">WIN RATE</span>
+            <span className="font-bold text-[var(--gold-hi)]">{winRate.toFixed(0)}%</span>
+          </div>
+        </div>
+
         {/* Instrument Selector Pill */}
-        <div className="flex items-center gap-2 bg-[#090d16] border border-[#232f48] rounded-md px-2 py-1">
+        <div className="flex items-center gap-2 bg-[#090d16] border border-white/10 rounded-lg px-2 py-1">
           <span className="flex h-4 w-4 items-center justify-center rounded-full bg-[var(--gold)] text-black text-[9px] font-black">
             ✦
           </span>
@@ -99,7 +132,7 @@ export default function HeaderBar({
         </div>
 
         {/* Timeframe Selector Pills (1m, 5m, 15m, 30m, 1h, 4h) */}
-        <div className="flex items-center bg-[#090d16] border border-[#232f48] rounded-md p-0.5">
+        <div className="flex items-center bg-[#090d16] border border-white/10 rounded-lg p-0.5">
           {TIMEFRAMES.map((tf) => {
             const isActive = cfg.timeframe === tf.label;
             return (
@@ -108,7 +141,7 @@ export default function HeaderBar({
                 onClick={() => onSelectTimeframe(tf.label)}
                 className={`px-2 py-0.5 rounded text-[11px] font-bold transition-all ${
                   isActive
-                    ? "bg-[#253553] text-white shadow-sm"
+                    ? "bg-[#253553] text-white shadow-sm border border-white/10"
                     : "text-[var(--dim)] hover:text-white hover:bg-[#162135]"
                 }`}
               >
@@ -119,15 +152,15 @@ export default function HeaderBar({
         </div>
       </div>
 
-      {/* 2. Center: OANDA-style Sell / Buy Quote Spread Box */}
+      {/* 2. Center: Quick Spread & Direction Box */}
       <div className="flex items-center gap-2">
-        <div className="flex items-center bg-[#080d16] border border-[#232f48] rounded-lg p-1 gap-2 shadow-inner">
+        <div className="flex items-center bg-[#080d16] border border-white/10 rounded-lg p-1 gap-2 shadow-inner">
           {/* Sell Box */}
-          <div className="flex flex-col items-center justify-center px-3 py-1 rounded bg-[#f0546c]/10 border border-[#f0546c]/40 text-center min-w-[90px]">
+          <div className="flex flex-col items-center justify-center px-3 py-1 rounded bg-[#f0546c]/10 border border-[#f0546c]/40 text-center min-w-[85px]">
             <span className="text-[13px] font-bold text-[#f0546c] leading-tight">
               {fmtP(sellPrice, activeMeta.digits)}
             </span>
-            <span className="text-[8.5px] font-black text-[#f0546c] tracking-wider">SELL</span>
+            <span className="text-[8px] font-black text-[#f0546c] tracking-wider">SELL</span>
           </div>
 
           {/* Spread indicator */}
@@ -137,17 +170,17 @@ export default function HeaderBar({
           </div>
 
           {/* Buy Box */}
-          <div className="flex flex-col items-center justify-center px-3 py-1 rounded bg-[#388bfd]/10 border border-[#388bfd]/40 text-center min-w-[90px]">
-            <span className="text-[13px] font-bold text-[#388bfd] leading-tight">
+          <div className="flex flex-col items-center justify-center px-3 py-1 rounded bg-[#2fc98f]/10 border border-[#2fc98f]/40 text-center min-w-[85px]">
+            <span className="text-[13px] font-bold text-[#2fc98f] leading-tight">
               {fmtP(buyPrice, activeMeta.digits)}
             </span>
-            <span className="text-[8.5px] font-black text-[#388bfd] tracking-wider">BUY</span>
+            <span className="text-[8px] font-black text-[#2fc98f] tracking-wider">BUY</span>
           </div>
         </div>
 
         {/* Change % badge */}
         <div
-          className="hidden sm:flex flex-col justify-center px-2 py-1 rounded border text-[10.5px] font-semibold"
+          className="hidden sm:flex flex-col justify-center px-2 py-1 rounded-lg border text-[10.5px] font-semibold"
           style={{
             borderColor: chg >= 0 ? "rgba(47,201,143,0.3)" : "rgba(240,84,108,0.3)",
             color: chg >= 0 ? "var(--long)" : "var(--short)",
@@ -160,16 +193,16 @@ export default function HeaderBar({
       </div>
 
       {/* 3. Right: Feed Mode, Chart View, Simulator Controls & Settings */}
-      <div className="flex items-center gap-2.5">
+      <div className="flex items-center gap-2">
         {/* Feed Mode Switch (LIVE vs SIM) */}
-        <div className="flex items-center rounded-md border p-0.5" style={{ borderColor: "var(--line)", background: "var(--bg2)" }}>
+        <div className="flex items-center rounded-lg border border-white/10 p-0.5 bg-[#090d16]">
           <button
             onClick={onToggleLiveMode}
             className={`px-2.5 py-1 rounded text-[10px] font-bold transition-all ${
               !isLive ? "bg-[var(--gold)] text-black font-extrabold shadow" : "text-[var(--dim)] hover:text-white"
             }`}
           >
-            SIMULATOR
+            SIM
           </button>
           <button
             onClick={onToggleLiveMode}
@@ -178,17 +211,15 @@ export default function HeaderBar({
             }`}
           >
             <span className="h-1.5 w-1.5 rounded-full bg-black" />
-            <span>LIVE REAL</span>
+            <span>LIVE</span>
           </button>
         </div>
 
         {/* Chart View Toggle (Native Strategy Chart vs Official TradingView Widget) */}
         <button
           onClick={onToggleChartView}
-          className="hidden md:flex items-center gap-1 rounded-md border px-2.5 py-1 text-[10.5px] font-bold transition-all hover:border-[var(--gold)]"
+          className="hidden md:flex items-center gap-1 rounded-lg border border-white/10 px-2.5 py-1 text-[10.5px] font-bold transition-all hover:border-[var(--gold)] bg-[#0e1524]"
           style={{
-            borderColor: "var(--line)",
-            background: cfg.chartView === "tradingview" ? "rgba(232,180,76,0.15)" : "var(--bg2)",
             color: cfg.chartView === "tradingview" ? "var(--gold-hi)" : "var(--muted)",
           }}
           title="Toggle between Strategy Scanner Chart and Official TradingView Widget"
@@ -198,10 +229,10 @@ export default function HeaderBar({
 
         {/* Simulator speed buttons when in simulated mode */}
         {!isLive && (
-          <div className="hidden lg:flex items-center overflow-hidden rounded-md border" style={{ borderColor: "var(--line)" }}>
+          <div className="hidden lg:flex items-center overflow-hidden rounded-lg border border-white/10 bg-[#090d16]">
             <button
               onClick={onToggleRun}
-              className="px-2 py-1 transition-colors hover:bg-[var(--bg3)] text-[var(--gold-hi)]"
+              className="px-2 py-1 transition-colors hover:bg-[var(--bg3)] text-[var(--gold-hi)] font-bold"
               title={running ? "Pause feed" : "Resume feed"}
             >
               {running ? "⏸" : "▶"}
@@ -210,11 +241,10 @@ export default function HeaderBar({
               <button
                 key={s.label}
                 onClick={() => onSpeed(i)}
-                className="border-l px-1.5 py-1 text-[9.5px] font-bold"
+                className="border-l border-white/10 px-1.5 py-1 text-[9.5px] font-bold"
                 style={{
-                  borderColor: "var(--line)",
                   color: speed === i ? "var(--gold-hi)" : "var(--dim)",
-                  background: speed === i ? "rgba(232,180,76,0.14)" : "transparent",
+                  background: speed === i ? "rgba(232,180,76,0.18)" : "transparent",
                 }}
               >
                 {s.label}
@@ -226,10 +256,9 @@ export default function HeaderBar({
         {/* Audio Mute Toggle */}
         <button
           onClick={onToggleSound}
-          className="flex items-center gap-1 rounded-md border px-2 py-1 text-[10.5px] font-bold transition-all hover:border-[var(--gold)]"
+          className="flex items-center gap-1 rounded-lg border border-white/10 px-2 py-1 text-[10.5px] font-bold transition-all hover:border-[var(--gold)]"
           style={{
-            borderColor: "var(--line)",
-            background: cfg.soundEnabled ? "rgba(47,201,143,0.12)" : "var(--bg2)",
+            background: cfg.soundEnabled ? "rgba(47,201,143,0.12)" : "rgba(255,255,255,0.03)",
             color: cfg.soundEnabled ? "var(--long)" : "var(--dim)",
           }}
           title={cfg.soundEnabled ? "Sound Alerts Active (Click to mute, or press 'M')" : "Sound Alerts Muted (Click to enable, or press 'M')"}
@@ -240,12 +269,7 @@ export default function HeaderBar({
         {/* Guide / Playbook button */}
         <button
           onClick={onOpenGuide}
-          className="flex items-center gap-1 rounded-md border px-2.5 py-1 text-[10.5px] font-bold transition-all hover:border-[var(--gold)]"
-          style={{
-            borderColor: "var(--line)",
-            background: "var(--bg2)",
-            color: "var(--gold-hi)",
-          }}
+          className="flex items-center gap-1 rounded-lg border border-white/10 px-2.5 py-1 text-[10.5px] font-bold transition-all hover:border-[var(--gold)] bg-[#0e1524] text-[var(--gold-hi)]"
           title="Open Strategy Guide & Explanations"
         >
           <span>📖 PLAYBOOK</span>
@@ -254,11 +278,11 @@ export default function HeaderBar({
         {/* Broker Execution Settings Launcher */}
         <button
           onClick={onOpenBrokerSettings}
-          className="flex items-center gap-1 rounded-md border px-2.5 py-1 text-[10.5px] font-bold transition-all hover:border-[var(--gold)]"
+          className="flex items-center gap-1 rounded-lg border px-2.5 py-1 text-[10.5px] font-bold transition-all hover:border-[var(--gold)] tactile-btn"
           style={{
             borderColor: "var(--gold-deep)",
-            background: "rgba(232,180,76,0.12)",
-            color: "var(--gold)",
+            background: "rgba(232,180,76,0.16)",
+            color: "var(--gold-hi)",
           }}
         >
           <span>⚙️ BROKER</span>

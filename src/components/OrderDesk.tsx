@@ -54,16 +54,14 @@ export default function OrderDesk({ st, cfg, onExecuteManual }: Props) {
 
   return (
     <div
-      className="rounded-lg border overflow-hidden shadow-lg font-mono text-[11px] flex flex-col"
-      style={{ borderColor: "var(--line)", background: "var(--bg1)" }}
+      className="glass-panel overflow-hidden shadow-2xl font-mono text-[11px] flex flex-col border border-white/10"
     >
       {/* Header */}
       <div
-        className="flex items-center justify-between border-b px-3 py-2"
-        style={{ borderColor: "var(--line)", background: "var(--bg2)" }}
+        className="flex items-center justify-between border-b px-3 py-2 border-white/10 bg-black/40"
       >
-        <span className="font-bold text-white text-[11.5px]">PRO ORDER EXECUTION DESK</span>
-        <span className="text-[9px] px-1.5 py-0.5 rounded bg-[var(--gold)]/10 text-[var(--gold)] font-bold">
+        <span className="font-extrabold text-white text-[11.5px] tracking-wider">ORDER EXECUTION DESK</span>
+        <span className="text-[9px] px-1.5 py-0.5 rounded bg-[var(--gold)]/20 text-[var(--gold-hi)] font-extrabold border border-[var(--gold)]/40">
           1-CLICK DISPATCH
         </span>
       </div>

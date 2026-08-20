@@ -39,12 +39,12 @@ export default function BrokerSettingsModal({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4 backdrop-blur-sm animate-fade-in">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4 backdrop-blur-md animate-fade-in">
       <div
-        className="w-full max-w-2xl rounded-lg border p-6 shadow-2xl font-mono text-[12px]"
-        style={{ background: "var(--bg)", borderColor: "var(--line)", color: "var(--ink)" }}
+        className="w-full max-w-2xl rounded-xl border p-6 shadow-2xl font-mono text-[12px] glass-panel border-white/15"
+        style={{ color: "var(--ink)" }}
       >
-        <div className="flex items-center justify-between border-b pb-3 mb-4" style={{ borderColor: "var(--line)" }}>
+        <div className="flex items-center justify-between border-b pb-3 mb-4 border-white/10">
           <div className="flex items-center gap-2">
             <span className="h-2.5 w-2.5 rounded-full bg-[var(--gold)] animate-pulse" />
             <h2 className="text-sm font-bold tracking-wider text-[var(--gold)]">

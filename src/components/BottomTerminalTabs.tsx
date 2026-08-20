@@ -46,27 +46,26 @@ export default function BottomTerminalTabs({
 
   return (
     <div
-      className="rounded-lg border overflow-hidden shadow-xl font-mono text-[11.5px]"
-      style={{ borderColor: "var(--line)", background: "var(--bg1)" }}
+      className="glass-panel overflow-hidden shadow-2xl font-mono text-[11.5px] border border-white/10"
     >
       {/* Tab Navigation Header */}
       <div
-        className="flex items-center justify-between border-b px-3 py-1.5"
-        style={{ borderColor: "var(--line)", background: "var(--bg2)" }}
+        className="flex flex-wrap items-center justify-between border-b px-3 py-1.5 gap-2"
+        style={{ borderColor: "rgba(255, 255, 255, 0.08)", background: "rgba(10, 15, 24, 0.7)" }}
       >
-        <div className="flex items-center gap-1">
+        <div className="flex items-center gap-1.5">
           <button
             onClick={() => setActiveTab("positions")}
-            className={`flex items-center gap-1.5 px-3 py-1 rounded text-[11px] font-bold transition-all ${
+            className={`flex items-center gap-1.5 px-3 py-1 rounded-lg text-[11px] font-bold transition-all tactile-btn ${
               activeTab === "positions"
-                ? "bg-[var(--gold)] text-black"
-                : "text-[var(--muted)] hover:text-[var(--ink)] hover:bg-[var(--bg3)]"
+                ? "bg-[var(--gold)] text-black shadow-sm"
+                : "text-[var(--muted)] hover:text-white hover:bg-white/5"
             }`}
           >
             <span>POSITIONS</span>
             {openTrade && (
               <span
-                className="px-1 py-px rounded-full text-[9px] font-extrabold"
+                className="px-1.5 py-0.5 rounded-full text-[9px] font-black"
                 style={{
                   background: currentPnl >= 0 ? "rgba(47,201,143,0.3)" : "rgba(240,84,108,0.3)",
                   color: currentPnl >= 0 ? "var(--long)" : "var(--short)",
@@ -79,10 +78,10 @@ export default function BottomTerminalTabs({
 
           <button
             onClick={() => setActiveTab("history")}
-            className={`flex items-center gap-1.5 px-3 py-1 rounded text-[11px] font-bold transition-all ${
+            className={`flex items-center gap-1.5 px-3 py-1 rounded-lg text-[11px] font-bold transition-all tactile-btn ${
               activeTab === "history"
-                ? "bg-[var(--gold)] text-black"
-                : "text-[var(--muted)] hover:text-[var(--ink)] hover:bg-[var(--bg3)]"
+                ? "bg-[var(--gold)] text-black shadow-sm"
+                : "text-[var(--muted)] hover:text-white hover:bg-white/5"
             }`}
           >
             <span>TRADE JOURNAL</span>
@@ -91,10 +90,10 @@ export default function BottomTerminalTabs({
 
           <button
             onClick={() => setActiveTab("equity")}
-            className={`px-3 py-1 rounded text-[11px] font-bold transition-all ${
+            className={`px-3 py-1 rounded-lg text-[11px] font-bold transition-all tactile-btn ${
               activeTab === "equity"
-                ? "bg-[var(--gold)] text-black"
-                : "text-[var(--muted)] hover:text-[var(--ink)] hover:bg-[var(--bg3)]"
+                ? "bg-[var(--gold)] text-black shadow-sm"
+                : "text-[var(--muted)] hover:text-white hover:bg-white/5"
             }`}
           >
             EQUITY CURVE
@@ -102,10 +101,10 @@ export default function BottomTerminalTabs({
 
           <button
             onClick={() => setActiveTab("logs")}
-            className={`px-3 py-1 rounded text-[11px] font-bold transition-all ${
+            className={`px-3 py-1 rounded-lg text-[11px] font-bold transition-all tactile-btn ${
               activeTab === "logs"
-                ? "bg-[var(--gold)] text-black"
-                : "text-[var(--muted)] hover:text-[var(--ink)] hover:bg-[var(--bg3)]"
+                ? "bg-[var(--gold)] text-black shadow-sm"
+                : "text-[var(--muted)] hover:text-white hover:bg-white/5"
             }`}
           >
             ENGINE WIRE & LOGS
@@ -117,24 +116,24 @@ export default function BottomTerminalTabs({
           {activeTab === "history" && stats.closed.length > 0 && (
             <button
               onClick={handleExportCsv}
-              className="px-2 py-0.5 rounded bg-[var(--bg3)] border border-[var(--line)] text-[10px] font-bold text-[var(--gold)] hover:bg-[var(--gold)] hover:text-black transition-all flex items-center gap-1"
+              className="px-2.5 py-1 rounded-lg bg-white/5 border border-white/10 text-[10.5px] font-bold text-[var(--gold-hi)] hover:bg-[var(--gold)] hover:text-black transition-all flex items-center gap-1 tactile-btn"
             >
               <span>📥 Export CSV</span>
             </button>
           )}
-          <div className="flex items-center gap-1">
-            <span className="text-[var(--dim)]">NET P&L:</span>
-            <span className="font-bold" style={{ color: stats.net >= 0 ? "var(--long)" : "var(--short)" }}>
+          <div className="flex items-center gap-1 bg-[#090d16] px-2 py-0.5 rounded border border-white/5">
+            <span className="text-[var(--dim)] font-bold">NET P&L:</span>
+            <span className="font-extrabold" style={{ color: stats.net >= 0 ? "var(--long)" : "var(--short)" }}>
               {fmtUSD(stats.net)}
             </span>
           </div>
-          <div className="flex items-center gap-1">
-            <span className="text-[var(--dim)]">WIN RATE:</span>
-            <span className="font-bold text-[var(--ink)]">{stats.winRate.toFixed(1)}%</span>
+          <div className="flex items-center gap-1 bg-[#090d16] px-2 py-0.5 rounded border border-white/5">
+            <span className="text-[var(--dim)] font-bold">WIN RATE:</span>
+            <span className="font-extrabold text-white">{stats.winRate.toFixed(1)}%</span>
           </div>
-          <div className="flex items-center gap-1">
-            <span className="text-[var(--dim)]">PROFIT FACTOR:</span>
-            <span className="font-bold text-[var(--gold)]">{stats.pf.toFixed(2)}</span>
+          <div className="flex items-center gap-1 bg-[#090d16] px-2 py-0.5 rounded border border-white/5">
+            <span className="text-[var(--dim)] font-bold">PROFIT FACTOR:</span>
+            <span className="font-extrabold text-[var(--gold-hi)]">{stats.pf.toFixed(2)}</span>
           </div>
         </div>
       </div>

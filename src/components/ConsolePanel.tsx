@@ -68,8 +68,8 @@ export default function ConsolePanel({ cfg, onCfg, onAoi, st, stats }: Props) {
   });
 
   return (
-    <div className="panel rise-in p-4" style={{ animationDelay: "0.15s" }}>
-      <div className="panel-title mb-3">Engine Console</div>
+    <div className="glass-panel rise-in p-4" style={{ animationDelay: "0.15s" }}>
+      <div className="panel-title mb-3 font-bold text-white tracking-wider">Engine Console</div>
 
       {/* ---- execution mode ---- */}
       <div className="mb-4">

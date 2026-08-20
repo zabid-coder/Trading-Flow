@@ -471,8 +471,20 @@ function TerminalContent() {
           {/* Live Pipeline Strip */}
           <PipelineStrip st={st} />
 
-          {/* Interactive Chart */}
-          <CandleChart st={st} cfg={cfg} />
+          {/* Interactive Chart with 1-Click Overlays */}
+          <CandleChart
+            st={st}
+            cfg={cfg}
+            onDecide={handleDecide}
+            onMoveToBreakeven={() => {
+              moveToBreakeven(st, cfg);
+              setTick((t) => t + 1);
+            }}
+            onPartialClose={(ratio) => {
+              partialClose(st, cfg, ratio);
+              setTick((t) => t + 1);
+            }}
+          />
 
           {/* Structured Bottom Dock */}
           <BottomTerminalTabs

@@ -20,11 +20,11 @@ export default function PipelineStrip({ st }: { st: EngineState }) {
   const identity = st.halted ? "DISCIPLINE LOCK" : "SIGNAL PIPELINE";
 
   return (
-    <div className="panel rise-in px-4 py-3" style={{ animationDelay: "0.12s" }}>
+    <div className="glass-panel rise-in px-4 py-3 border border-white/10" style={{ animationDelay: "0.12s" }}>
       <div className="flex flex-wrap items-center gap-x-5 gap-y-2">
         <div className="flex items-center gap-2">
-          <span className="panel-title">{identity}</span>
-          <span className="rounded-sm px-2 py-0.5 font-mono text-[10px] font-bold tracking-wider" style={{ color: cs.color, background: cs.bg }}>
+          <span className="panel-title font-bold text-white tracking-wider">{identity}</span>
+          <span className="rounded px-2 py-0.5 font-mono text-[10px] font-extrabold tracking-wider border border-white/10" style={{ color: cs.color, background: cs.bg }}>
             {le.cls.replace("_", " ")}
           </span>
         </div>
