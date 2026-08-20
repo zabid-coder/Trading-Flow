@@ -316,7 +316,16 @@ function manage(st: EngineState, cfg: EngineConfig, bar: Bar) {
       : curTrade.oz * (curTrade.entry - (curPrice + half));
     const currentR = upnl / Math.max(1, curTrade.risk);
 
-    // Auto-Breakeven at threshold (default +1.0R)
+    // Pyramid BE Step 1: Lock 25% partial profit at +0.5R
+    if (cfg.autoBreakeven && currentR >= 0.5 && !curTrade.partialClosed && !curTrade.partialLock_50) {
+      const partialPnl = (curTrade.risk * 0.5) * 0.25;
+      st.balance += partialPnl;
+      curTrade.partialRealized = (curTrade.partialRealized || 0) + partialPnl;
+      curTrade.partialLock_50 = true;
+      ev(st, bar.t, "TP", curTrade.side === "LONG" ? "long" : "short", `💰 Locked 25% partial profit @ +0.5R (+$${partialPnl.toFixed(0)})`);
+    }
+
+    // Pyramid BE Step 2: Move SL to breakeven at threshold (default +1.0R)
     if (cfg.autoBreakeven && !curTrade.isBreakeven && currentR >= (cfg.beThresholdR || 1.0)) {
       const buffer = Math.max(0.04 * atr, 0.10);
       const beSl = curTrade.side === "LONG" ? curTrade.entry + half + buffer : curTrade.entry - (half + buffer);
@@ -327,11 +336,11 @@ function manage(st: EngineState, cfg: EngineConfig, bar: Bar) {
         bar.t,
         "SYS",
         "sys",
-        `⚡ Auto-Breakeven locked (+${currentR.toFixed(1)}R) · Stop moved to entry ${fmtP(beSl)}`
+        `⚡ Breakeven locked (+${currentR.toFixed(1)}R) · Stop moved to entry ${fmtP(beSl)}`
       );
     }
 
-    // Dynamic ATR Trailing Stop (activates once trade surpasses trailThresholdR, e.g. +1.5R)
+    // Pyramid BE Step 3: Dynamic ATR Trailing Stop (activates past +1.5R)
     if (cfg.trailingStop && currentR >= (cfg.trailThresholdR || 1.5)) {
       const trailDist = (cfg.trailAtrDist || 1.0) * atr;
       if (curTrade.side === "LONG") {
@@ -340,6 +349,7 @@ function manage(st: EngineState, cfg: EngineConfig, bar: Bar) {
           curTrade.sl = potentialSl;
           curTrade.trailActive = true;
           curTrade.trailSl = potentialSl;
+          curTrade.trailStop = potentialSl;
         }
       } else {
         const potentialSl = curPrice + half + trailDist;
@@ -347,6 +357,7 @@ function manage(st: EngineState, cfg: EngineConfig, bar: Bar) {
           curTrade.sl = potentialSl;
           curTrade.trailActive = true;
           curTrade.trailSl = potentialSl;
+          curTrade.trailStop = potentialSl;
         }
       }
     }

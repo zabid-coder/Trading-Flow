@@ -68,6 +68,23 @@ export async function dispatchTradeOrder(
 
   // 1. MetaTrader 5 Bridge
   if (cfg.mt5Enabled && cfg.mt5Url) {
+    try {
+      const health = await testMt5Bridge(cfg.mt5Url);
+      if (!health.ok) {
+        return {
+          success: false,
+          message: `Broker offline: ${health.msg}`,
+          targets: { mt5: { ok: false, msg: health.msg } },
+        };
+      }
+    } catch (err) {
+      return {
+        success: false,
+        message: "Broker health check failed",
+        targets: { mt5: { ok: false, msg: (err as Error).message } },
+      };
+    }
+
     let mt5Sent = false;
     let lastError = "";
 

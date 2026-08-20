@@ -14,7 +14,7 @@ import {
 } from "./engine/engine";
 import { connectLiveFeed, fetchHistoricalBars, getSymbolMeta } from "./engine/liveFeed";
 import { dispatchTradeOrder, loadBrokerConfig, saveBrokerConfig } from "./engine/brokerDispatch";
-import { saveJournalTrades } from "./engine/storage";
+import { initAutoprune, saveJournalTrades } from "./engine/storage";
 import {
   playBeSound,
   playOrderFilledSound,
@@ -63,6 +63,11 @@ function TerminalContent() {
   useEffect(() => {
     setAudioMuted(!cfg.soundEnabled);
   }, [cfg.soundEnabled]);
+
+  // Periodic LocalStorage Journal Auto-Pruning
+  useEffect(() => {
+    initAutoprune();
+  }, []);
 
   // Global Keyboard Shortcuts
   useEffect(() => {

@@ -25,6 +25,13 @@ export function pruneTrades(maxDays: number = 90) {
   }
 }
 
+export function initAutoprune() {
+  pruneTrades(90);
+  if (typeof window !== "undefined") {
+    window.setInterval(() => pruneTrades(90), 7 * 24 * 60 * 60 * 1000);
+  }
+}
+
 export function saveJournalTrades(trades: Trade[]) {
   try {
     const cutoff = Date.now() - 90 * 86400000;
