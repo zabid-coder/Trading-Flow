@@ -30,6 +30,7 @@ export default function BootOverlay({ onDone }: { onDone: () => void }) {
         window.clearTimeout(b);
       };
     }
+    return undefined;
   }, [shown, onDone]);
 
   const pct = (shown / LINES.length) * 100;

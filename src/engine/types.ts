@@ -71,6 +71,7 @@ export interface Trade {
   trailActive?: boolean;
   trailSl?: number;
   trailStop?: number;
+  partialLock_50?: boolean;
 }
 
 export interface EngineEvent {

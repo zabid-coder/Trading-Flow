@@ -67,10 +67,19 @@ def get_db():
     finally:
         conn.close()
 
+import sys
+
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     print("==================================================")
-    print("⚡ Trading Flow — MetaTrader 5 Local Bridge")
+    print("[*] Trading Flow - MetaTrader 5 Local Bridge")
     print("==================================================")
     init_db()
     if SECRET == "TF-SECRET-KEY":
@@ -82,7 +91,7 @@ async def lifespan(app: FastAPI):
     else:
         acc = mt5.account_info()
         if acc:
-            print(f"[✓] MT5 Connected: Account #{acc.login} | Server: {acc.server} | Balance: ${acc.balance:,.2f}")
+            print(f"[OK] MT5 Connected: Account #{acc.login} | Server: {acc.server} | Balance: ${acc.balance:,.2f}")
         else:
             print("[!] MT5 Initialized but no account logged in.")
     yield
