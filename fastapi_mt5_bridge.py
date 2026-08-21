@@ -193,35 +193,53 @@ def place_order(order: OrderPayload, authorization: Optional[str] = Header(None)
     step = sym_info.volume_step if sym_info.volume_step > 0 else 0.01
     vol = max(sym_info.volume_min, min(sym_info.volume_max, round(order.qty / step) * step))
 
-    # Adaptive filling mode resolution based on broker symbol support
-    filling_type = mt5.ORDER_FILLING_IOC
+    # Adaptive filling modes to try in order
+    fillings_to_try = [mt5.ORDER_FILLING_FOK, mt5.ORDER_FILLING_IOC, mt5.ORDER_FILLING_RETURN]
     if hasattr(sym_info, 'filling_mode'):
-        if sym_info.filling_mode & 1: # ORDER_FILLING_FOK
-            filling_type = mt5.ORDER_FILLING_FOK
-        elif sym_info.filling_mode & 2: # ORDER_FILLING_IOC
-            filling_type = mt5.ORDER_FILLING_IOC
-        elif sym_info.filling_mode & 4: # ORDER_FILLING_RETURN
-            filling_type = mt5.ORDER_FILLING_RETURN
+        if sym_info.filling_mode & 1:
+            fillings_to_try = [mt5.ORDER_FILLING_FOK, mt5.ORDER_FILLING_IOC, mt5.ORDER_FILLING_RETURN]
+        elif sym_info.filling_mode & 2:
+            fillings_to_try = [mt5.ORDER_FILLING_IOC, mt5.ORDER_FILLING_FOK, mt5.ORDER_FILLING_RETURN]
+        elif sym_info.filling_mode & 4:
+            fillings_to_try = [mt5.ORDER_FILLING_RETURN, mt5.ORDER_FILLING_IOC, mt5.ORDER_FILLING_FOK]
 
-    req = {
-        "action": mt5.TRADE_ACTION_DEAL,
-        "symbol": symbol,
-        "volume": float(vol),
-        "type": action_type,
-        "price": fill_price,
-        "sl": float(order.sl) if order.sl else 0.0,
-        "tp": float(order.tp) if order.tp else 0.0,
-        "deviation": 20,
-        "magic": 108821,
-        "comment": order.comment or "Trading Flow",
-        "type_time": mt5.ORDER_TIME_GTC,
-        "type_filling": filling_type,
-    }
+    # Validate SL / TP geometry against live price
+    sl_val = float(order.sl) if order.sl and order.sl > 0 else 0.0
+    tp_val = float(order.tp) if order.tp and order.tp > 0 else 0.0
 
-    result = mt5.order_send(req)
+    if action_type == mt5.ORDER_TYPE_BUY:
+        if sl_val >= fill_price: sl_val = 0.0
+        if tp_val > 0 and tp_val <= fill_price: tp_val = 0.0
+    else:
+        if sl_val > 0 and sl_val <= fill_price: sl_val = 0.0
+        if tp_val >= fill_price: tp_val = 0.0
+
+    result = None
+    last_err = "Unknown error"
+
+    for filling_type in fillings_to_try:
+        req = {
+            "action": mt5.TRADE_ACTION_DEAL,
+            "symbol": symbol,
+            "volume": float(vol),
+            "type": action_type,
+            "price": fill_price,
+            "sl": sl_val,
+            "tp": tp_val,
+            "deviation": 30,
+            "magic": 108821,
+            "comment": order.comment or "Trading Flow",
+            "type_time": mt5.ORDER_TIME_GTC,
+            "type_filling": filling_type,
+        }
+
+        result = mt5.order_send(req)
+        if result and result.retcode == mt5.TRADE_RETCODE_DONE:
+            break
+        last_err = result.comment if result else str(mt5.last_error())
+
     if not result or result.retcode != mt5.TRADE_RETCODE_DONE:
-        err = result.comment if result else str(mt5.last_error())
-        raise HTTPException(status_code=500, detail=f"MT5 order failed: {err}")
+        raise HTTPException(status_code=500, detail=f"MT5 order failed: {last_err}")
 
     # Calculate execution slippage
     expected_px = float(order.price) if order.price else fill_price
