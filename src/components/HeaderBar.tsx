@@ -24,6 +24,7 @@ interface Props {
   onToggleSound: () => void;
   onOpenBrokerSettings: () => void;
   onOpenGuide: () => void;
+  onOpenQuickOrder?: (side: "LONG" | "SHORT") => void;
   tick: number;
 }
 
@@ -42,6 +43,7 @@ export default function HeaderBar({
   onToggleSound,
   onOpenBrokerSettings,
   onOpenGuide,
+  onOpenQuickOrder,
   tick,
 }: Props) {
   const last = st.bars[st.bars.length - 1] || { t: Date.now(), o: 2750, h: 2750, l: 2750, c: 2750, v: 0, day: 0 };
@@ -155,13 +157,17 @@ export default function HeaderBar({
       {/* 2. Center: Quick Spread & Direction Box */}
       <div className="flex items-center gap-2">
         <div className="flex items-center bg-[#080d16] border border-white/10 rounded-lg p-1 gap-2 shadow-inner">
-          {/* Sell Box */}
-          <div className="flex flex-col items-center justify-center px-3 py-1 rounded bg-[#f0546c]/10 border border-[#f0546c]/40 text-center min-w-[85px]">
+          {/* Sell Box Button */}
+          <button
+            onClick={() => onOpenQuickOrder?.("SHORT")}
+            className="flex flex-col items-center justify-center px-3 py-1 rounded bg-[#f0546c]/10 border border-[#f0546c]/40 text-center min-w-[85px] hover:bg-[#f0546c]/25 hover:scale-[1.02] active:scale-[0.98] transition-all cursor-pointer"
+            title="Click to open Universal Order Desk (SELL)"
+          >
             <span className="text-[13px] font-bold text-[#f0546c] leading-tight">
               {fmtP(sellPrice, activeMeta.digits)}
             </span>
-            <span className="text-[8px] font-black text-[#f0546c] tracking-wider">SELL</span>
-          </div>
+            <span className="text-[8px] font-black text-[#f0546c] tracking-wider">▼ SELL / SHORT</span>
+          </button>
 
           {/* Spread indicator */}
           <div className="flex flex-col items-center justify-center px-1 text-center">
@@ -169,13 +175,17 @@ export default function HeaderBar({
             <span className="text-[7.5px] text-[var(--dim)] tracking-tighter">SPREAD</span>
           </div>
 
-          {/* Buy Box */}
-          <div className="flex flex-col items-center justify-center px-3 py-1 rounded bg-[#2fc98f]/10 border border-[#2fc98f]/40 text-center min-w-[85px]">
+          {/* Buy Box Button */}
+          <button
+            onClick={() => onOpenQuickOrder?.("LONG")}
+            className="flex flex-col items-center justify-center px-3 py-1 rounded bg-[#2fc98f]/10 border border-[#2fc98f]/40 text-center min-w-[85px] hover:bg-[#2fc98f]/25 hover:scale-[1.02] active:scale-[0.98] transition-all cursor-pointer"
+            title="Click to open Universal Order Desk (BUY)"
+          >
             <span className="text-[13px] font-bold text-[#2fc98f] leading-tight">
               {fmtP(buyPrice, activeMeta.digits)}
             </span>
-            <span className="text-[8px] font-black text-[#2fc98f] tracking-wider">BUY</span>
-          </div>
+            <span className="text-[8px] font-black text-[#2fc98f] tracking-wider">▲ BUY / LONG</span>
+          </button>
         </div>
 
         {/* Change % badge */}

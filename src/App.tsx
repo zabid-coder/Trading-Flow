@@ -40,6 +40,7 @@ import DashboardNav from "./components/DashboardNav";
 import StrategyLabView from "./components/StrategyLabView";
 import VisualAcademyView from "./components/VisualAcademyView";
 import RiskAnalyticsView from "./components/RiskAnalyticsView";
+import UniversalOrderModal from "./components/UniversalOrderModal";
 
 function TerminalContent() {
   const { addToast } = useToast();
@@ -54,11 +55,12 @@ function TerminalContent() {
   const [brokerModalOpen, setBrokerModalOpen] = useState(false);
   const [guideModalOpen, setGuideModalOpen] = useState(false);
   const [rightTab, setRightTab] = useState<"signals" | "order" | "strategy" | "risk">("signals");
+  const [universalOrderOpen, setUniversalOrderOpen] = useState(false);
+  const [universalOrderSide, setUniversalOrderSide] = useState<"LONG" | "SHORT">("LONG");
 
-  const stRef = useRef<EngineState | null>(null);
-  if (!stRef.current) {
-    stRef.current = createEngine(48271 + Math.floor(Math.random() * 900000), DEFAULT_CFG);
-  }
+  const [stRef] = useState(() => ({
+    current: createEngine(48271 + Math.floor(Math.random() * 900000), DEFAULT_CFG),
+  }));
 
   const [tick, setTick] = useState(0);
   const [running, setRunning] = useState(true);
@@ -94,10 +96,14 @@ function TerminalContent() {
         setSpeed(1);
       } else if (e.key === "3") {
         setSpeed(2);
-      } else if (e.key === "b" || e.key === "B" || e.key === "l" || e.key === "L") {
-        setRightTab("order");
+      } else if (e.key === "b" || e.key === "B") {
+        setUniversalOrderSide("LONG");
+        setUniversalOrderOpen(true);
       } else if (e.key === "s" || e.key === "S") {
-        setRightTab("order");
+        setUniversalOrderSide("SHORT");
+        setUniversalOrderOpen(true);
+      } else if (e.key === "o" || e.key === "O") {
+        setUniversalOrderOpen((prev) => !prev);
       } else if (e.key === "x" || e.key === "X") {
         closeOpenPosition();
       } else if (e.key === "m" || e.key === "M") {
@@ -445,6 +451,10 @@ function TerminalContent() {
         onToggleSound={() => patchCfg({ soundEnabled: !cfg.soundEnabled })}
         onOpenBrokerSettings={() => setBrokerModalOpen(true)}
         onOpenGuide={() => setDashboardView("academy")}
+        onOpenQuickOrder={(side) => {
+          setUniversalOrderSide(side);
+          setUniversalOrderOpen(true);
+        }}
         tick={tick}
       />
 
@@ -455,6 +465,54 @@ function TerminalContent() {
         pendingSignalsCount={pendingSignalsCount}
         openPositionsCount={st.open ? 1 : 0}
       />
+
+      {/* Universal Order Modal */}
+      <UniversalOrderModal
+        isOpen={universalOrderOpen}
+        onClose={() => setUniversalOrderOpen(false)}
+        st={st}
+        cfg={cfg}
+        initialSide={universalOrderSide}
+        onExecute={handleExecuteManual}
+        onClosePosition={closeOpenPosition}
+        onMoveToBreakeven={handleMoveToBreakeven}
+      />
+
+      {/* Floating Universal 1-Click Order Pill (Always accessible on all pages) */}
+      <div className="fixed bottom-4 right-4 z-40 flex items-center gap-2 select-none">
+        <button
+          onClick={() => {
+            setUniversalOrderSide("LONG");
+            setUniversalOrderOpen(true);
+          }}
+          className="px-3.5 py-2 rounded-xl bg-[#2fc98f] text-black font-black text-[11px] tracking-wide shadow-xl hover:brightness-110 active:scale-95 transition-all flex items-center gap-1 border border-black/20"
+          title="Universal BUY (Hotkey: B)"
+        >
+          <span>▲ BUY</span>
+        </button>
+
+        <button
+          onClick={() => {
+            setUniversalOrderSide("SHORT");
+            setUniversalOrderOpen(true);
+          }}
+          className="px-3.5 py-2 rounded-xl bg-[#f0546c] text-black font-black text-[11px] tracking-wide shadow-xl hover:brightness-110 active:scale-95 transition-all flex items-center gap-1 border border-black/20"
+          title="Universal SELL (Hotkey: S)"
+        >
+          <span>▼ SELL</span>
+        </button>
+
+        <button
+          onClick={() => setUniversalOrderOpen((v) => !v)}
+          className="px-3.5 py-2 rounded-xl bg-[#090d16]/95 border border-[var(--gold)] text-[var(--gold)] font-extrabold text-[11px] tracking-wide shadow-2xl hover:bg-[#151f33] active:scale-95 transition-all flex items-center gap-1.5 backdrop-blur-md"
+          title="Toggle Universal Order Desk (Hotkey: O)"
+        >
+          <span>⚡ ORDER DESK</span>
+          <span className="text-[8.5px] px-1 py-px rounded bg-[var(--gold)]/20 text-[var(--gold-hi)] font-mono">
+            [O]
+          </span>
+        </button>
+      </div>
 
       {/* Modals */}
       <BrokerSettingsModal
