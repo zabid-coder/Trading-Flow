@@ -1,14 +1,15 @@
 import { useEffect, useRef, useState } from "react";
 import type { EngineConfig, EngineState } from "../engine/types";
 import { fmtClock, fmtP, SUPPORTED_SYMBOLS } from "../engine/types";
+import PineScriptModal from "./PineScriptModal";
 
 const N = 110;
 const W = 1000;
-const H = 480;
+const H = 490;
 const AXIS = 68;
 const PLOT = W - AXIS;
-const PAD_T = 16;
-const PAD_B = 52;
+const PAD_T = 20;
+const PAD_B = 54;
 
 function niceStep(span: number) {
   const raw = span / 6;
@@ -26,12 +27,26 @@ interface Props {
   onPartialClose?: (ratio?: number) => void;
 }
 
-export default function CandleChart({ st, cfg, onDecide, onMoveToBreakeven, onPartialClose }: Props) {
+export default function CandleChart({
+  st,
+  cfg,
+  onDecide,
+  onMoveToBreakeven,
+  onPartialClose,
+}: Props) {
   const svgRef = useRef<SVGSVGElement>(null);
   const tvContainerRef = useRef<HTMLDivElement>(null);
   const [hover, setHover] = useState<{ i: number; y: number } | null>(null);
+  const [pineModalOpen, setPineModalOpen] = useState(false);
 
-  const activeMeta = SUPPORTED_SYMBOLS.find((s) => s.symbol === cfg.activeSymbol) || SUPPORTED_SYMBOLS[0];
+  // Pine Script Indicator Overlay Toggles
+  const [showTrapSignals, setShowTrapSignals] = useState(true);
+  const [showRejectionWicks, setShowRejectionWicks] = useState(true);
+  const [showAoiLines, setShowAoiLines] = useState(true);
+  const [showOrderBlocks, setShowOrderBlocks] = useState(true);
+
+  const activeMeta =
+    SUPPORTED_SYMBOLS.find((s) => s.symbol === cfg.activeSymbol) || SUPPORTED_SYMBOLS[0];
 
   // Embed TradingView widget if chartView === "tradingview"
   useEffect(() => {
@@ -130,6 +145,61 @@ export default function CandleChart({ st, cfg, onDecide, onMoveToBreakeven, onPa
 
   const visTrades = st.trades.filter((t) => t.entryIndex >= offset);
 
+  // Exact Pine Script v5 mathematical indicator evaluations for every bar
+  const evaluatedBars = bars.map((b, i) => {
+    const candleRange = b.h - b.l;
+    const bodyRange = Math.abs(b.c - b.o);
+    const upperWick = b.h - Math.max(b.o, b.c);
+    const lowerWick = Math.min(b.o, b.c) - b.l;
+
+    // Pine Script LPR / HPR Rejections
+    const lowerWickPct = candleRange > 0 ? (lowerWick / candleRange) * 100 : 0;
+    const upperWickPct = candleRange > 0 ? (upperWick / candleRange) * 100 : 0;
+
+    const isLPR = candleRange > 0 && lowerWick >= candleRange * (cfg.rejThresh || 0.5) && lowerWick > bodyRange;
+    const isHPR = candleRange > 0 && upperWick >= candleRange * (cfg.rejThresh || 0.5) && upperWick > bodyRange;
+
+    // Power Candle Breakout
+    const isPowerBull = b.c > b.o && bodyRange >= 1.15 * st.atr && upperWick <= candleRange * 0.22;
+    const isPowerBear = b.o > b.c && bodyRange >= 1.15 * st.atr && lowerWick <= candleRange * 0.22;
+
+    // Trap Reversal Logic (Right-Side Identity)
+    let bullishTrap = false;
+    let bearishTrap = false;
+    let sweptAoiLabel = "";
+
+    for (const a of aois) {
+      if (a.role === "S" && b.l < a.ty && b.c > a.ty && isLPR) {
+        bullishTrap = true;
+        sweptAoiLabel = a.label;
+        break;
+      }
+      if (a.role === "R" && b.h > a.ty && b.c < a.ty && isHPR) {
+        bearishTrap = true;
+        sweptAoiLabel = a.label;
+        break;
+      }
+    }
+
+    return {
+      b,
+      i,
+      candleRange,
+      bodyRange,
+      upperWick,
+      lowerWick,
+      lowerWickPct,
+      upperWickPct,
+      isLPR,
+      isHPR,
+      isPowerBull,
+      isPowerBear,
+      bullishTrap,
+      bearishTrap,
+      sweptAoiLabel,
+    };
+  });
+
   const onMove = (e: React.MouseEvent) => {
     const r = svgRef.current?.getBoundingClientRect();
     if (!r) return;
@@ -140,18 +210,20 @@ export default function CandleChart({ st, cfg, onDecide, onMoveToBreakeven, onPa
     else setHover(null);
   };
 
-  const hoverBar = hover ? bars[hover.i] : null;
-  const hoverCls = hover ? st.classes[offset + hover.i] : null;
+  const hoverData = hover ? evaluatedBars[hover.i] : null;
 
   return (
     <div
-      className="rounded-lg border overflow-hidden shadow-xl font-mono text-[11.5px]"
-      style={{ borderColor: "var(--line)", background: "var(--bg1)" }}
+      className="rounded-xl border overflow-hidden shadow-2xl font-mono text-[11.5px] bg-[var(--bg1)]"
+      style={{ borderColor: "var(--line)" }}
     >
-      {/* Chart Top Header */}
+      {/* Pine Script Modal */}
+      <PineScriptModal isOpen={pineModalOpen} onClose={() => setPineModalOpen(false)} />
+
+      {/* Top Header & Indicator Toolbar */}
       <div
-        className="flex flex-wrap items-center justify-between gap-2 border-b px-3 py-2"
-        style={{ borderColor: "var(--line)", background: "var(--bg2)" }}
+        className="flex flex-wrap items-center justify-between gap-2 border-b px-3 py-2 bg-[#090d16]"
+        style={{ borderColor: "var(--line)" }}
       >
         <div className="flex items-center gap-3">
           <span className="font-bold text-[12px] text-white">
@@ -162,28 +234,55 @@ export default function CandleChart({ st, cfg, onDecide, onMoveToBreakeven, onPa
           </span>
         </div>
 
-        {/* AOI Legend Pills */}
-        <div className="flex items-center gap-3 text-[10px] text-[var(--muted)]">
-          <span className="flex items-center gap-1">
-            <span className="h-2 w-2 rounded-sm bg-[#f0546c]/40 border border-[#f0546c]" />
-            <span>RESISTANCE AOI</span>
-          </span>
-          <span className="flex items-center gap-1">
-            <span className="h-2 w-2 rounded-sm bg-[#2fc98f]/40 border border-[#2fc98f]" />
-            <span>SUPPORT AOI</span>
-          </span>
-          <span className="flex items-center gap-1">
-            <span className="h-0.5 w-3 bg-[var(--gold)]" />
-            <span>MARK PRICE</span>
-          </span>
-          <span className="text-[var(--dim)] font-bold">({aois.length} LIVE AOIS)</span>
+        {/* Pine Script Indicator Overlay Toggles */}
+        <div className="flex flex-wrap items-center gap-2 text-[10px]">
+          <button
+            onClick={() => setShowTrapSignals(!showTrapSignals)}
+            className={`px-2 py-0.5 rounded font-bold transition-all ${
+              showTrapSignals
+                ? "bg-[#2fc98f]/20 border border-[#2fc98f]/60 text-[#2fc98f]"
+                : "border border-[var(--line)] text-[var(--dim)]"
+            }`}
+          >
+            {showTrapSignals ? "✓ TRAP SIGNALS (▲/▼)" : "TRAP SIGNALS"}
+          </button>
+
+          <button
+            onClick={() => setShowRejectionWicks(!showRejectionWicks)}
+            className={`px-2 py-0.5 rounded font-bold transition-all ${
+              showRejectionWicks
+                ? "bg-[var(--gold)]/20 border border-[var(--gold)]/60 text-[var(--gold)]"
+                : "border border-[var(--line)] text-[var(--dim)]"
+            }`}
+          >
+            {showRejectionWicks ? "✓ LPR/HPR WICKS" : "LPR/HPR WICKS"}
+          </button>
+
+          <button
+            onClick={() => setShowAoiLines(!showAoiLines)}
+            className={`px-2 py-0.5 rounded font-bold transition-all ${
+              showAoiLines
+                ? "bg-[#388bfd]/20 border border-[#388bfd]/60 text-[#388bfd]"
+                : "border border-[var(--line)] text-[var(--dim)]"
+            }`}
+          >
+            {showAoiLines ? "✓ AOI (PDH/PDL)" : "AOI LEVELS"}
+          </button>
+
+          {/* Export / View Pine Script Code Button */}
+          <button
+            onClick={() => setPineModalOpen(true)}
+            className="px-2.5 py-1 rounded bg-[var(--gold)] text-black font-black text-[10px] hover:brightness-110 transition-all flex items-center gap-1 shadow"
+          >
+            <span>📜 PINE SCRIPT (v5)</span>
+          </button>
         </div>
       </div>
 
       {/* Main Chart Body */}
-      <div className="relative min-h-[460px] bg-[#0c121e]">
+      <div className="relative min-h-[490px] bg-[#070b14]">
         {cfg.chartView === "tradingview" ? (
-          <div ref={tvContainerRef} className="h-[480px] w-full" />
+          <div ref={tvContainerRef} className="h-[490px] w-full" />
         ) : (
           <svg
             ref={svgRef}
@@ -200,7 +299,7 @@ export default function CandleChart({ st, cfg, onDecide, onMoveToBreakeven, onPa
                   x2={PLOT}
                   y1={y(p)}
                   y2={y(p)}
-                  stroke="var(--line-soft)"
+                  stroke="rgba(255,255,255,0.05)"
                   strokeWidth="0.8"
                   strokeDasharray="2 4"
                 />
@@ -216,64 +315,174 @@ export default function CandleChart({ st, cfg, onDecide, onMoveToBreakeven, onPa
               </g>
             ))}
 
-            {/* AOI Zones */}
-            {aois.map((a, i) => {
-              const yTop = y(Math.max(a.y1, a.y2));
-              const yBot = y(Math.min(a.y1, a.y2));
-              const hZone = Math.max(2, yBot - yTop);
-              const isRes = a.role === "R";
-              const col = isRes ? "var(--short)" : "var(--long)";
-              return (
-                <g key={i}>
-                  <rect
-                    x={0}
-                    y={yTop}
-                    width={PLOT}
-                    height={hZone}
-                    fill={isRes ? "rgba(240,84,108,0.08)" : "rgba(47,201,143,0.08)"}
-                    stroke={col}
-                    strokeWidth="0.8"
-                    strokeDasharray="3 3"
-                  />
-                  <text
-                    x={8}
-                    y={yTop + 10}
-                    fill={col}
-                    fontSize="8.5"
-                    fontWeight="700"
-                    fontFamily="var(--font-mono)"
-                  >
-                    {a.label}
-                  </text>
-                </g>
-              );
-            })}
+            {/* AOI Zones & Horizontal Indicator Plots */}
+            {showAoiLines &&
+              aois.map((a, i) => {
+                const yTop = y(Math.max(a.y1, a.y2));
+                const yBot = y(Math.min(a.y1, a.y2));
+                const hZone = Math.max(2, yBot - yTop);
+                const isRes = a.role === "R";
+                const col = isRes ? "#f0546c" : "#2fc98f";
+                return (
+                  <g key={i}>
+                    {/* Shaded AOI / Order Block Band */}
+                    <rect
+                      x={0}
+                      y={yTop}
+                      width={PLOT}
+                      height={hZone}
+                      fill={isRes ? "rgba(240,84,108,0.07)" : "rgba(47,201,143,0.07)"}
+                      stroke={col}
+                      strokeWidth="0.8"
+                      strokeDasharray="3 3"
+                    />
+                    <text
+                      x={8}
+                      y={yTop + 10}
+                      fill={col}
+                      fontSize="9"
+                      fontWeight="800"
+                      fontFamily="var(--font-mono)"
+                    >
+                      {a.label} ({fmtP(a.ty, activeMeta.digits)})
+                    </text>
+                  </g>
+                );
+              })}
 
-            {/* Candlesticks */}
-            {bars.map((b, i) => {
+            {/* Candlesticks with Exact Pine Script Highlights */}
+            {evaluatedBars.map((item) => {
+              const { b, i, isLPR, isHPR, isPowerBull, isPowerBear, bullishTrap, bearishTrap, lowerWickPct, upperWickPct } = item;
               const xi = xOf(i);
               const yo = y(b.o);
               const yc = y(b.c);
               const yh = y(b.h);
               const yl = y(b.l);
               const isUp = b.c >= b.o;
-              const col = isUp ? "var(--long)" : "var(--short)";
+              const col = isUp ? "#2fc98f" : "#f0546c";
               const bodyTop = Math.min(yo, yc);
               const bodyH = Math.max(1.5, Math.abs(yc - yo));
 
               return (
                 <g key={i}>
-                  {/* Wicks */}
-                  <line x1={xi} x2={xi} y1={yh} y2={yl} stroke={col} strokeWidth="1.2" />
+                  {/* Candlestick Wicks */}
+                  <line
+                    x1={xi}
+                    x2={xi}
+                    y1={yh}
+                    y2={yl}
+                    stroke={isLPR ? "#2fc98f" : isHPR ? "#f0546c" : col}
+                    strokeWidth={isLPR || isHPR ? "1.8" : "1.2"}
+                  />
+
                   {/* Real Body */}
                   <rect
                     x={xi - bw / 2}
                     y={bodyTop}
                     width={bw}
                     height={bodyH}
-                    fill={isUp ? "#2fc98f" : "#f0546c"}
+                    fill={col}
                     rx={0.5}
                   />
+
+                  {/* LPR / HPR Rejection Wick Badge */}
+                  {showRejectionWicks && isLPR && (
+                    <g>
+                      <circle cx={xi} cy={yl} r="3" fill="#2fc98f" />
+                      <text
+                        x={xi}
+                        y={yl + 11}
+                        textAnchor="middle"
+                        fill="#2fc98f"
+                        fontSize="7.5"
+                        fontWeight="900"
+                        fontFamily="var(--font-mono)"
+                      >
+                        LPR {lowerWickPct.toFixed(0)}%
+                      </text>
+                    </g>
+                  )}
+
+                  {showRejectionWicks && isHPR && (
+                    <g>
+                      <circle cx={xi} cy={yh} r="3" fill="#f0546c" />
+                      <text
+                        x={xi}
+                        y={yh - 5}
+                        textAnchor="middle"
+                        fill="#f0546c"
+                        fontSize="7.5"
+                        fontWeight="900"
+                        fontFamily="var(--font-mono)"
+                      >
+                        HPR {upperWickPct.toFixed(0)}%
+                      </text>
+                    </g>
+                  )}
+
+                  {/* Pine Script Bullish Trap Entry Signal (▲ Buy Low) */}
+                  {showTrapSignals && bullishTrap && (
+                    <g>
+                      {/* Triangle Up Shape */}
+                      <path
+                        d={`M${xi - 5},${yl + 22} L${xi + 5},${yl + 22} L${xi},${yl + 14} Z`}
+                        fill="#2fc98f"
+                        stroke="#000"
+                        strokeWidth="0.8"
+                      />
+                      <rect
+                        x={xi - 28}
+                        y={yl + 24}
+                        width={56}
+                        height={13}
+                        rx="2"
+                        fill="#2fc98f"
+                      />
+                      <text
+                        x={xi}
+                        y={yl + 33}
+                        textAnchor="middle"
+                        fill="#000"
+                        fontSize="7.5"
+                        fontWeight="900"
+                        fontFamily="var(--font-mono)"
+                      >
+                        TRAP BUY
+                      </text>
+                    </g>
+                  )}
+
+                  {/* Pine Script Bearish Trap Entry Signal (▼ Sell High) */}
+                  {showTrapSignals && bearishTrap && (
+                    <g>
+                      {/* Triangle Down Shape */}
+                      <path
+                        d={`M${xi - 5},${yh - 22} L${xi + 5},${yh - 22} L${xi},${yh - 14} Z`}
+                        fill="#f0546c"
+                        stroke="#000"
+                        strokeWidth="0.8"
+                      />
+                      <rect
+                        x={xi - 28}
+                        y={yh - 37}
+                        width={56}
+                        height={13}
+                        rx="2"
+                        fill="#f0546c"
+                      />
+                      <text
+                        x={xi}
+                        y={yh - 28}
+                        textAnchor="middle"
+                        fill="#000"
+                        fontSize="7.5"
+                        fontWeight="900"
+                        fontFamily="var(--font-mono)"
+                      >
+                        TRAP SELL
+                      </text>
+                    </g>
+                  )}
                 </g>
               );
             })}
@@ -281,23 +490,23 @@ export default function CandleChart({ st, cfg, onDecide, onMoveToBreakeven, onPa
             {/* Entry / Exit Markers */}
             {visTrades.map((t) => {
               const xi = xOf(t.entryIndex - offset);
-              const col = t.side === "LONG" ? "var(--long)" : "var(--short)";
+              const col = t.side === "LONG" ? "#2fc98f" : "#f0546c";
               const ye = y(t.entry);
               return (
                 <g key={"t" + t.id}>
                   {t.side === "LONG" ? (
-                    <path d={`M${xi - 5},${ye + 14} L${xi + 5},${ye + 14} L${xi},${ye + 5} Z`} fill={col} />
+                    <path d={`M${xi - 6},${ye + 14} L${xi + 6},${ye + 14} L${xi},${ye + 4} Z`} fill={col} stroke="#000" strokeWidth="0.8" />
                   ) : (
-                    <path d={`M${xi - 5},${ye - 14} L${xi + 5},${ye - 14} L${xi},${ye - 5} Z`} fill={col} />
+                    <path d={`M${xi - 6},${ye - 14} L${xi + 6},${ye - 14} L${xi},${ye - 4} Z`} fill={col} stroke="#000" strokeWidth="0.8" />
                   )}
                   {t.exit != null && t.exitIndex != null && t.exitIndex >= offset && (
                     <circle
                       cx={xOf(t.exitIndex - offset)}
                       cy={y(t.exit)}
-                      r="3"
+                      r="3.5"
                       fill="var(--bg1)"
-                      stroke={(t.pnl ?? 0) >= 0 ? "var(--long)" : "var(--short)"}
-                      strokeWidth="1.6"
+                      stroke={(t.pnl ?? 0) >= 0 ? "#2fc98f" : "#f0546c"}
+                      strokeWidth="1.8"
                     />
                   )}
                 </g>
@@ -311,9 +520,9 @@ export default function CandleChart({ st, cfg, onDecide, onMoveToBreakeven, onPa
               y1={lastY}
               y2={lastY}
               stroke="var(--gold)"
-              strokeWidth="1"
+              strokeWidth="1.2"
               strokeDasharray="2 3"
-              opacity="0.85"
+              opacity="0.9"
             />
             <rect x={PLOT + 2} y={lastY - 8} width={AXIS - 4} height={16} rx={2} fill="var(--gold)" />
             <text
@@ -322,14 +531,14 @@ export default function CandleChart({ st, cfg, onDecide, onMoveToBreakeven, onPa
               textAnchor="middle"
               fill="#000"
               fontSize="10"
-              fontWeight="800"
+              fontWeight="900"
               fontFamily="var(--font-mono)"
             >
               {fmtP(last.c, activeMeta.digits)}
             </text>
 
             {/* Crosshair */}
-            {hover && hoverBar && (
+            {hover && hoverData && (
               <g>
                 <line
                   x1={xOf(hover.i)}
@@ -371,6 +580,50 @@ export default function CandleChart({ st, cfg, onDecide, onMoveToBreakeven, onPa
           </svg>
         )}
 
+        {/* Hover Logic Inspector Tooltip (Pine Script Conditions Breakdown) */}
+        {hoverData && cfg.chartView === "native" && (
+          <div
+            className="absolute bottom-3 left-3 z-30 rounded-lg p-2.5 shadow-xl font-mono text-[10px] space-y-1 bg-[#060910]/95 border border-[var(--line)] backdrop-blur-md"
+          >
+            <div className="flex items-center justify-between gap-3 border-b border-white/10 pb-1">
+              <span className="text-[var(--gold)] font-bold">PINE SCRIPT LOGIC INSPECTOR</span>
+              <span className="text-white">{fmtClock(hoverData.b.t)}</span>
+            </div>
+
+            <div className="grid grid-cols-2 gap-x-4 gap-y-0.5 text-[9.5px]">
+              <div>O: <span className="text-white">{fmtP(hoverData.b.o)}</span></div>
+              <div>H: <span className="text-white">{fmtP(hoverData.b.h)}</span></div>
+              <div>L: <span className="text-white">{fmtP(hoverData.b.l)}</span></div>
+              <div>C: <span className="text-white">{fmtP(hoverData.b.c)}</span></div>
+            </div>
+
+            <div className="pt-1 border-t border-white/10 space-y-0.5 text-[9px]">
+              <div className="flex items-center justify-between gap-2">
+                <span>Lower Wick (LPR):</span>
+                <span className={hoverData.isLPR ? "text-[#2fc98f] font-bold" : "text-[var(--dim)]"}>
+                  {hoverData.lowerWickPct.toFixed(0)}% {hoverData.isLPR ? "(LPR CONFIRMED)" : ""}
+                </span>
+              </div>
+              <div className="flex items-center justify-between gap-2">
+                <span>Upper Wick (HPR):</span>
+                <span className={hoverData.isHPR ? "text-[#f0546c] font-bold" : "text-[var(--dim)]"}>
+                  {hoverData.upperWickPct.toFixed(0)}% {hoverData.isHPR ? "(HPR CONFIRMED)" : ""}
+                </span>
+              </div>
+              {hoverData.bullishTrap && (
+                <div className="text-[#2fc98f] font-bold">
+                  ★ BULLISH TRAP TRIGGERED ({hoverData.sweptAoiLabel})
+                </div>
+              )}
+              {hoverData.bearishTrap && (
+                <div className="text-[#f0546c] font-bold">
+                  ★ BEARISH TRAP TRIGGERED ({hoverData.sweptAoiLabel})
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
         {/* 1-Click Floating In-Chart Signal Decision HUD */}
         {cfg.chartView === "native" && onDecide && (() => {
           const pending = st.queue.filter((q) => q.status === "PENDING");
@@ -382,7 +635,7 @@ export default function CandleChart({ st, cfg, onDecide, onMoveToBreakeven, onPa
 
           return (
             <div
-              className="absolute top-4 right-20 z-20 flex flex-col gap-2 rounded-xl p-3.5 shadow-2xl glass-panel animate-slide-in select-none min-w-[280px]"
+              className="absolute top-4 right-20 z-20 flex flex-col gap-2 rounded-xl p-3.5 shadow-2xl bg-[#090d16]/95 border backdrop-blur-md select-none min-w-[280px]"
               style={{
                 borderColor: isLong ? "rgba(47,201,143,0.5)" : "rgba(240,84,108,0.5)",
                 boxShadow: isLong ? "0 0 24px rgba(47,201,143,0.2)" : "0 0 24px rgba(240,84,108,0.2)",
@@ -394,7 +647,7 @@ export default function CandleChart({ st, cfg, onDecide, onMoveToBreakeven, onPa
                     className="rounded px-2 py-0.5 font-mono text-[10px] font-black tracking-wider"
                     style={{
                       background: isLong ? "rgba(47,201,143,0.2)" : "rgba(240,84,108,0.2)",
-                      color: isLong ? "var(--long)" : "var(--short)",
+                      color: isLong ? "#2fc98f" : "#f0546c",
                       border: `1px solid ${isLong ? "rgba(47,201,143,0.6)" : "rgba(240,84,108,0.6)"}`,
                     }}
                   >
@@ -414,11 +667,11 @@ export default function CandleChart({ st, cfg, onDecide, onMoveToBreakeven, onPa
                 </div>
                 <div>
                   <span className="text-[8px] text-[var(--dim)] block tracking-widest">STOP</span>
-                  <span className="font-bold text-[var(--short)]">{fmtP(topPending.sl, activeMeta.digits)}</span>
+                  <span className="font-bold text-[#f0546c]">{fmtP(topPending.sl, activeMeta.digits)}</span>
                 </div>
                 <div>
                   <span className="text-[8px] text-[var(--dim)] block tracking-widest">TARGET</span>
-                  <span className="font-bold text-[var(--long)]">{fmtP(topPending.tp, activeMeta.digits)}</span>
+                  <span className="font-bold text-[#2fc98f]">{fmtP(topPending.tp, activeMeta.digits)}</span>
                 </div>
               </div>
 
@@ -428,7 +681,7 @@ export default function CandleChart({ st, cfg, onDecide, onMoveToBreakeven, onPa
                   className="h-full rounded-full transition-all duration-300"
                   style={{
                     width: `${(barsLeft / 4) * 100}%`,
-                    background: barsLeft <= 1 ? "var(--short)" : "var(--gold)",
+                    background: barsLeft <= 1 ? "#f0546c" : "var(--gold)",
                   }}
                 />
               </div>
@@ -436,12 +689,10 @@ export default function CandleChart({ st, cfg, onDecide, onMoveToBreakeven, onPa
               <div className="flex items-center gap-2 pt-1">
                 <button
                   onClick={() => onDecide(topPending.id, true)}
-                  className="flex-1 rounded-lg py-2 font-mono text-[11px] font-extrabold tracking-wider tactile-btn flex items-center justify-center gap-1.5"
+                  className="flex-1 rounded-lg py-2 font-mono text-[11px] font-extrabold tracking-wider flex items-center justify-center gap-1.5 transition-all shadow-md hover:brightness-110"
                   style={{
-                    background: "rgba(47,201,143,0.22)",
-                    color: "var(--long)",
-                    border: "1px solid rgba(47,201,143,0.7)",
-                    boxShadow: "0 0 14px rgba(47,201,143,0.25)",
+                    background: "#2fc98f",
+                    color: "#000",
                   }}
                 >
                   <span>✓</span>
@@ -449,116 +700,14 @@ export default function CandleChart({ st, cfg, onDecide, onMoveToBreakeven, onPa
                 </button>
                 <button
                   onClick={() => onDecide(topPending.id, false)}
-                  className="rounded-lg px-3 py-2 font-mono text-[11px] font-bold tracking-wider tactile-btn"
-                  style={{
-                    background: "rgba(240,84,108,0.18)",
-                    color: "var(--short)",
-                    border: "1px solid rgba(240,84,108,0.6)",
-                  }}
+                  className="px-3 rounded-lg py-2 font-mono text-[11px] font-bold border border-white/20 text-[var(--muted)] hover:bg-white/10 transition-all"
                 >
-                  ✕ SKIP
+                  REJECT
                 </button>
               </div>
             </div>
           );
         })()}
-
-        {/* Live In-Chart Floating Position Control Pill */}
-        {cfg.chartView === "native" && st.open && (() => {
-          const t = st.open;
-          const half = cfg.spread / 2;
-          const lastBar = st.bars[st.bars.length - 1];
-          const curPrice = lastBar ? lastBar.c : t.entry;
-          const upnl = t.side === "LONG"
-            ? t.oz * (curPrice - half - t.entry)
-            : t.oz * (t.entry - (curPrice + half));
-          const currentR = upnl / Math.max(1, t.risk);
-          const isWinning = upnl >= 0;
-
-          return (
-            <div
-              className="absolute top-4 left-4 z-20 flex items-center gap-3 rounded-xl px-3 py-2 shadow-2xl glass-panel animate-slide-in select-none border border-white/15"
-              style={{
-                boxShadow: isWinning ? "0 0 20px rgba(47,201,143,0.2)" : "0 0 20px rgba(240,84,108,0.2)",
-              }}
-            >
-              <div className="flex items-center gap-2">
-                <span
-                  className="rounded px-1.5 py-0.5 font-mono text-[9px] font-black tracking-wider"
-                  style={{
-                    background: t.side === "LONG" ? "rgba(47,201,143,0.2)" : "rgba(240,84,108,0.2)",
-                    color: t.side === "LONG" ? "var(--long)" : "var(--short)",
-                    border: `1px solid ${t.side === "LONG" ? "rgba(47,201,143,0.5)" : "rgba(240,84,108,0.5)"}`,
-                  }}
-                >
-                  {t.side}
-                </span>
-                <div>
-                  <span className="text-[8.5px] text-[var(--dim)] font-mono block">FLOATING P&L</span>
-                  <span className={`font-mono text-[13px] font-extrabold ${isWinning ? "text-[var(--long)]" : "text-[var(--short)]"}`}>
-                    {isWinning ? "+" : ""}${upnl.toFixed(0)} ({isWinning ? "+" : ""}{currentR.toFixed(2)}R)
-                  </span>
-                </div>
-              </div>
-
-              <div className="h-6 w-px bg-white/10" />
-
-              {/* Quick Actions */}
-              <div className="flex items-center gap-1.5">
-                {onMoveToBreakeven && !t.isBreakeven && (
-                  <button
-                    onClick={onMoveToBreakeven}
-                    className="rounded-lg px-2.5 py-1 text-[10px] font-mono font-bold text-[var(--gold-hi)] bg-[var(--gold)]/15 border border-[var(--gold)]/40 hover:bg-[var(--gold)]/25 tactile-btn"
-                    title="Move stop loss to entry price + spread buffer"
-                  >
-                    ⚡ BE
-                  </button>
-                )}
-                {t.isBreakeven && (
-                  <span className="rounded px-1.5 py-0.5 text-[8.5px] font-mono font-bold text-[var(--long)] bg-[var(--long)]/10 border border-[var(--long)]/30">
-                    BE LOCKED
-                  </span>
-                )}
-                {onPartialClose && !t.partialClosed && (
-                  <button
-                    onClick={() => onPartialClose(0.5)}
-                    className="rounded-lg px-2.5 py-1 text-[10px] font-mono font-bold text-white bg-white/10 border border-white/20 hover:bg-white/20 tactile-btn"
-                    title="Realize 50% profit immediately"
-                  >
-                    💰 50%
-                  </button>
-                )}
-              </div>
-            </div>
-          );
-        })()}
-
-        {/* Hover Tooltip */}
-        {cfg.chartView === "native" && hover && hoverBar && (
-          <div
-            className="pointer-events-none absolute top-3 z-10 rounded-md border px-3 py-1.5 font-mono text-[10.5px] shadow-xl"
-            style={{
-              left: `${Math.min(75, Math.max(3, (xOf(hover.i) / W) * 100))}%`,
-              borderColor: "var(--line)",
-              background: "rgba(10,16,28,0.96)",
-            }}
-          >
-            <div className="flex items-center gap-2 text-[var(--muted)] mb-0.5">
-              <span>{fmtClock(hoverBar.t)} UTC</span>
-              {hoverCls && (
-                <span className="text-[8.5px] px-1 py-px rounded bg-[#1e293b] font-bold text-[var(--gold)]">
-                  {hoverCls}
-                </span>
-              )}
-            </div>
-            <div className="grid grid-cols-4 gap-x-3 text-[10px]">
-              <span>O: {fmtP(hoverBar.o, activeMeta.digits)}</span>
-              <span className="text-[var(--long)]">H: {fmtP(hoverBar.h, activeMeta.digits)}</span>
-              <span className="text-[var(--short)]">L: {fmtP(hoverBar.l, activeMeta.digits)}</span>
-              <span>C: {fmtP(hoverBar.c, activeMeta.digits)}</span>
-            </div>
-          </div>
-        )}
       </div>
     </div>
   );
