@@ -15,6 +15,16 @@ const BASE_T = Date.UTC(2025, 2, 3, 0, 0, 0); // simulated feed epoch
 
 export const DEFAULT_CFG: EngineConfig = {
   identity: "reversal",
+  selectedStrategy: "sweep_reversal",
+  strategyMode: "single",
+  enabledStrategies: {
+    sweep_reversal: true,
+    ob_fvg_retest: true,
+    session_breakout: true,
+    ema_pullback: true,
+    rsi_exhaustion: true,
+  },
+  minConfluenceCount: 2,
   account: 10000,
   riskUSD: 375,
   rr: 2.0,

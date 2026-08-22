@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { BrokerConfig, EngineConfig, EngineState, Timeframe } from "./engine/types";
+import type { BrokerConfig, DashboardView, EngineConfig, EngineState, Timeframe } from "./engine/types";
 import { fmtUSD } from "./engine/types";
 import {
   DEFAULT_CFG,
@@ -32,9 +32,14 @@ import ConsolePanel from "./components/ConsolePanel";
 import StrategyRadar from "./components/StrategyRadar";
 import OrderDesk from "./components/OrderDesk";
 import MarketWatchlist from "./components/MarketWatchlist";
+import EventFeed from "./components/EventFeed";
 import BottomTerminalTabs from "./components/BottomTerminalTabs";
 import BrokerSettingsModal from "./components/BrokerSettingsModal";
 import StrategyGuideModal from "./components/StrategyGuideModal";
+import DashboardNav from "./components/DashboardNav";
+import StrategyLabView from "./components/StrategyLabView";
+import VisualAcademyView from "./components/VisualAcademyView";
+import RiskAnalyticsView from "./components/RiskAnalyticsView";
 
 function TerminalContent() {
   const { addToast } = useToast();
@@ -420,6 +425,8 @@ function TerminalContent() {
 
   const pendingSignalsCount = st.queue.filter((q) => q.status === "PENDING").length;
 
+  const [dashboardView, setDashboardView] = useState<DashboardView>("terminal");
+
   return (
     <div className="flex min-h-screen flex-col bg-[#070b13] text-[#c9d1d9] font-sans antialiased selection:bg-[var(--gold)] selection:text-black">
       {/* Top Header Toolbar */}
@@ -437,8 +444,16 @@ function TerminalContent() {
         onToggleChartView={toggleChartView}
         onToggleSound={() => patchCfg({ soundEnabled: !cfg.soundEnabled })}
         onOpenBrokerSettings={() => setBrokerModalOpen(true)}
-        onOpenGuide={() => setGuideModalOpen(true)}
+        onOpenGuide={() => setDashboardView("academy")}
         tick={tick}
+      />
+
+      {/* Modular Dashboard Navigation */}
+      <DashboardNav
+        activeView={dashboardView}
+        onSelectView={setDashboardView}
+        pendingSignalsCount={pendingSignalsCount}
+        openPositionsCount={st.open ? 1 : 0}
       />
 
       {/* Modals */}
@@ -454,126 +469,192 @@ function TerminalContent() {
         onClose={() => setGuideModalOpen(false)}
       />
 
-      {/* Main 3-Column Professional Trading Workspace */}
-      <main className="mx-auto grid w-full max-w-[1880px] flex-1 grid-cols-12 items-start gap-2.5 p-2.5 lg:p-3">
-        {/* Left Column: Watchlist (2 cols on lg, 2 on xl) */}
-        <section className="hidden md:block md:col-span-3 lg:col-span-2">
-          <MarketWatchlist
-            activeSymbol={cfg.activeSymbol}
-            onSelect={selectSymbol}
-            price={st.bars[st.bars.length - 1]?.c || st.price}
-            feedMode={cfg.feedMode}
-          />
-        </section>
+      {/* VIEW 1: TRADING TERMINAL */}
+      {dashboardView === "terminal" && (
+        <main className="mx-auto grid w-full max-w-[1880px] flex-1 grid-cols-12 items-start gap-2.5 p-2.5 lg:p-3 animate-fade-in">
+          {/* Left Column: Watchlist (2 cols on lg, 2 on xl) */}
+          <section className="hidden md:block md:col-span-3 lg:col-span-2">
+            <MarketWatchlist
+              activeSymbol={cfg.activeSymbol}
+              onSelect={selectSymbol}
+              price={st.bars[st.bars.length - 1]?.c || st.price}
+              feedMode={cfg.feedMode}
+            />
+          </section>
 
-        {/* Center Column: Main Interactive Chart & Bottom Dock (7 cols on lg, 7 on xl) */}
-        <section className="col-span-12 md:col-span-9 lg:col-span-7 flex flex-col gap-2.5">
-          {/* Live Pipeline Strip */}
-          <PipelineStrip st={st} />
+          {/* Center Column: Main Interactive Chart & Bottom Dock (7 cols on lg, 7 on xl) */}
+          <section className="col-span-12 md:col-span-9 lg:col-span-7 flex flex-col gap-2.5">
+            {/* Live Pipeline Strip */}
+            <PipelineStrip st={st} />
 
-          {/* Interactive Chart with 1-Click Overlays */}
-          <CandleChart
-            st={st}
-            cfg={cfg}
-            onDecide={onDecide}
-            onMoveToBreakeven={() => {
-              moveToBreakeven(st, cfg);
-              setTick((t) => t + 1);
-            }}
-            onPartialClose={(ratio) => {
-              partialClose(st, cfg, ratio);
-              setTick((t) => t + 1);
-            }}
-          />
+            {/* Interactive Chart with 1-Click Overlays */}
+            <CandleChart
+              st={st}
+              cfg={cfg}
+              onDecide={onDecide}
+              onMoveToBreakeven={() => {
+                moveToBreakeven(st, cfg);
+                setTick((t) => t + 1);
+              }}
+              onPartialClose={(ratio) => {
+                partialClose(st, cfg, ratio);
+                setTick((t) => t + 1);
+              }}
+            />
 
-          {/* Structured Bottom Dock */}
-          <BottomTerminalTabs
-            st={st}
-            cfg={cfg}
-            stats={stats}
-            onClosePosition={closeOpenPosition}
-            onMoveToBreakeven={handleMoveToBreakeven}
-            onPartialClose={handlePartialClose}
-          />
-        </section>
+            {/* Structured Bottom Dock */}
+            <BottomTerminalTabs
+              st={st}
+              cfg={cfg}
+              stats={stats}
+              onClosePosition={closeOpenPosition}
+              onMoveToBreakeven={handleMoveToBreakeven}
+              onPartialClose={handlePartialClose}
+            />
+          </section>
 
-        {/* Right Column: Execution & Strategy Desk (3 cols on lg, 3 on xl) */}
-        <aside className="col-span-12 lg:col-span-3 flex flex-col gap-2 font-mono">
-          {/* Tab Selector */}
+          {/* Right Column: Execution & Strategy Desk (3 cols on lg, 3 on xl) */}
+          <aside className="col-span-12 lg:col-span-3 flex flex-col gap-2 font-mono">
+            {/* Tab Selector */}
+            <div
+              className="flex items-center rounded-lg border p-0.5"
+              style={{ borderColor: "var(--line)", background: "var(--bg2)" }}
+            >
+              <button
+                onClick={() => setRightTab("signals")}
+                className={`flex-1 py-1.5 rounded text-[10px] font-bold transition-all relative ${
+                  rightTab === "signals"
+                    ? "bg-[var(--gold)] text-black font-black"
+                    : "text-[var(--muted)] hover:text-white"
+                }`}
+              >
+                <span>⚡ SIGNALS</span>
+                {pendingSignalsCount > 0 && (
+                  <span className="ml-1 px-1 py-px rounded-full bg-[var(--short)] text-white text-[8px] font-extrabold animate-bounce">
+                    {pendingSignalsCount}
+                  </span>
+                )}
+              </button>
+
+              <button
+                onClick={() => setRightTab("order")}
+                className={`flex-1 py-1.5 rounded text-[10px] font-bold transition-all ${
+                  rightTab === "order"
+                    ? "bg-[var(--gold)] text-black font-black"
+                    : "text-[var(--muted)] hover:text-white"
+                }`}
+              >
+                🎯 ORDER DESK
+              </button>
+
+              <button
+                onClick={() => setRightTab("strategy")}
+                className={`flex-1 py-1.5 rounded text-[10px] font-bold transition-all ${
+                  rightTab === "strategy"
+                    ? "bg-[var(--gold)] text-black font-black"
+                    : "text-[var(--muted)] hover:text-white"
+                }`}
+              >
+                🧠 RADAR
+              </button>
+
+              <button
+                onClick={() => setRightTab("risk")}
+                className={`flex-1 py-1.5 rounded text-[10px] font-bold transition-all ${
+                  rightTab === "risk"
+                    ? "bg-[var(--gold)] text-black font-black"
+                    : "text-[var(--muted)] hover:text-white"
+                }`}
+              >
+                🛡️ RISK
+              </button>
+            </div>
+
+            {/* Active Tab Panel */}
+            {rightTab === "signals" && (
+              <div className="min-h-[300px]">
+                <ActionCenter st={st} cfg={cfg} onDecide={onDecide} />
+              </div>
+            )}
+
+            {rightTab === "order" && (
+              <OrderDesk st={st} cfg={cfg} onExecuteManual={handleExecuteManual} />
+            )}
+
+            {rightTab === "strategy" && (
+              <StrategyRadar st={st} cfg={cfg} onCfg={patchCfg} />
+            )}
+
+            {rightTab === "risk" && (
+              <ConsolePanel cfg={cfg} onCfg={patchCfg} onAoi={patchAoi} st={st} stats={stats} />
+            )}
+          </aside>
+        </main>
+      )}
+
+      {/* VIEW 2: SIGNALS & EXECUTION HUB */}
+      {dashboardView === "signals" && (
+        <main className="mx-auto w-full max-w-[1720px] flex-1 p-3 space-y-4 animate-fade-in font-mono">
           <div
-            className="flex items-center rounded-lg border p-0.5"
-            style={{ borderColor: "var(--line)", background: "var(--bg2)" }}
+            className="rounded-xl border p-4 shadow-lg flex flex-col md:flex-row items-start md:items-center justify-between gap-3"
+            style={{ borderColor: "var(--line)", background: "linear-gradient(180deg, #131c2d 0%, #0e1522 100%)" }}
           >
-            <button
-              onClick={() => setRightTab("signals")}
-              className={`flex-1 py-1.5 rounded text-[10px] font-bold transition-all relative ${
-                rightTab === "signals"
-                  ? "bg-[var(--gold)] text-black font-black"
-                  : "text-[var(--muted)] hover:text-white"
-              }`}
-            >
-              <span>⚡ SIGNALS</span>
-              {pendingSignalsCount > 0 && (
-                <span className="ml-1 px-1 py-px rounded-full bg-[var(--short)] text-white text-[8px] font-extrabold animate-bounce">
-                  {pendingSignalsCount}
+            <div>
+              <div className="flex items-center gap-2">
+                <span className="flex h-6 w-6 items-center justify-center rounded-md bg-[var(--gold)] text-black font-extrabold text-xs">
+                  ⚡
                 </span>
-              )}
-            </button>
+                <h1 className="text-base font-bold text-white tracking-wide">
+                  SIGNALS & DIRECT BROKER EXECUTION HUB
+                </h1>
+              </div>
+              <p className="text-[11px] text-[var(--muted)] mt-1">
+                Real-time algorithmic signal queue, MetaTrader 5 direct order dispatcher, and live execution audit logs.
+              </p>
+            </div>
 
             <button
-              onClick={() => setRightTab("order")}
-              className={`flex-1 py-1.5 rounded text-[10px] font-bold transition-all ${
-                rightTab === "order"
-                  ? "bg-[var(--gold)] text-black font-black"
-                  : "text-[var(--muted)] hover:text-white"
-              }`}
+              onClick={() => setBrokerModalOpen(true)}
+              className="px-4 py-2 rounded-lg bg-[var(--gold)]/15 border border-[var(--gold)] text-[var(--gold)] font-bold text-[11px] hover:bg-[var(--gold)]/25 transition-all"
             >
-              🎯 ORDER DESK
-            </button>
-
-            <button
-              onClick={() => setRightTab("strategy")}
-              className={`flex-1 py-1.5 rounded text-[10px] font-bold transition-all ${
-                rightTab === "strategy"
-                  ? "bg-[var(--gold)] text-black font-black"
-                  : "text-[var(--muted)] hover:text-white"
-              }`}
-            >
-              🧠 RADAR
-            </button>
-
-            <button
-              onClick={() => setRightTab("risk")}
-              className={`flex-1 py-1.5 rounded text-[10px] font-bold transition-all ${
-                rightTab === "risk"
-                  ? "bg-[var(--gold)] text-black font-black"
-                  : "text-[var(--muted)] hover:text-white"
-              }`}
-            >
-              🛡️ RISK
+              ⚙️ CONFIGURE BROKER & TELEGRAM
             </button>
           </div>
 
-          {/* Active Tab Panel */}
-          {rightTab === "signals" && (
-            <div className="min-h-[300px]">
+          <div className="grid grid-cols-12 gap-4">
+            <div className="col-span-12 lg:col-span-6">
               <ActionCenter st={st} cfg={cfg} onDecide={onDecide} />
             </div>
-          )}
 
-          {rightTab === "order" && (
-            <OrderDesk st={st} cfg={cfg} onExecuteManual={handleExecuteManual} />
-          )}
+            <div className="col-span-12 lg:col-span-6">
+              <div className="rounded-xl border p-4 bg-[var(--bg1)] h-[460px] flex flex-col" style={{ borderColor: "var(--line)" }}>
+                <div className="flex items-center justify-between border-b pb-2 mb-2" style={{ borderColor: "var(--line)" }}>
+                  <span className="font-bold text-white text-[12px]">ENGINE EXECUTION WIRE</span>
+                  <span className="text-[9px] text-[var(--dim)]">LIVE EVENT STREAM</span>
+                </div>
+                <div className="flex-1 overflow-y-auto">
+                  <EventFeed st={st} />
+                </div>
+              </div>
+            </div>
+          </div>
+        </main>
+      )}
 
-          {rightTab === "strategy" && (
-            <StrategyRadar st={st} cfg={cfg} onCfg={patchCfg} />
-          )}
+      {/* VIEW 3: MULTI-STRATEGY LAB */}
+      {dashboardView === "strategyLab" && (
+        <StrategyLabView st={st} cfg={cfg} onCfg={patchCfg} />
+      )}
 
-          {rightTab === "risk" && (
-            <ConsolePanel cfg={cfg} onCfg={patchCfg} onAoi={patchAoi} st={st} stats={stats} />
-          )}
-        </aside>
-      </main>
+      {/* VIEW 4: VISUAL STRATEGY ACADEMY */}
+      {dashboardView === "academy" && (
+        <VisualAcademyView />
+      )}
+
+      {/* VIEW 5: RISK & PORTFOLIO ANALYTICS */}
+      {dashboardView === "risk" && (
+        <RiskAnalyticsView st={st} cfg={cfg} stats={stats} onCfg={patchCfg} />
+      )}
 
       {/* Terminal Status Footer */}
       <footer
