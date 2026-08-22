@@ -1,6 +1,6 @@
-import type { CSSProperties } from "react";
-import type { EngineConfig, EngineState } from "../engine/types";
-import { fmtUSD } from "../engine/types";
+import { useState, type CSSProperties } from "react";
+import type { EngineConfig, EngineState, StrategyId } from "../engine/types";
+import { fmtP, fmtUSD, STRATEGY_DEFINITIONS } from "../engine/types";
 import type { Stats } from "../engine/engine";
 
 interface Props {
@@ -23,9 +23,9 @@ function Slider(props: {
   const pct = ((props.value - props.min) / (props.max - props.min)) * 100;
   return (
     <label className="block">
-      <div className="mb-1.5 flex items-center justify-between">
-        <span className="font-mono text-[9.5px] tracking-[0.18em] text-[var(--muted)]">{props.label}</span>
-        <span className="font-mono text-[11px] font-semibold text-[var(--gold-hi)]">{props.display}</span>
+      <div className="mb-1 flex items-center justify-between">
+        <span className="font-mono text-[9px] tracking-[0.16em] text-[var(--muted)]">{props.label}</span>
+        <span className="font-mono text-[10.5px] font-bold text-[var(--gold-hi)]">{props.display}</span>
       </div>
       <input
         type="range"
@@ -34,278 +34,525 @@ function Slider(props: {
         step={props.step}
         value={props.value}
         onChange={(e) => props.onChange(parseFloat(e.target.value))}
-        className="w-full"
+        className="w-full accent-[var(--gold)]"
         style={{ "--fill": `${pct}%` } as CSSProperties}
       />
     </label>
   );
 }
 
-function Toggle({ label, desc, on, onChange }: { label: string; desc: string; on: boolean; onChange: () => void }) {
+function Toggle({
+  label,
+  desc,
+  on,
+  onChange,
+}: {
+  label: string;
+  desc: string;
+  on: boolean;
+  onChange: () => void;
+}) {
   return (
-    <button onClick={onChange} className="group flex w-full items-center justify-between gap-3 rounded-md border px-3 py-2 text-left transition-all duration-200"
-      style={{ borderColor: on ? "var(--line)" : "var(--line-soft)", background: on ? "var(--bg2)" : "var(--bg1)", opacity: on ? 1 : 0.55 }}>
-      <span>
-        <span className="block font-mono text-[11px] font-semibold tracking-wide" style={{ color: on ? "var(--ink)" : "var(--muted)" }}>{label}</span>
-        <span className="block font-body text-[10px] text-[var(--dim)]">{desc}</span>
-      </span>
-      <span className="relative h-4 w-8 shrink-0 rounded-full transition-colors duration-200" style={{ background: on ? "rgba(232,180,76,0.3)" : "var(--bg3)" }}>
-        <span className="absolute top-0.5 h-3 w-3 rounded-full transition-all duration-200" style={{ left: on ? "18px" : "2px", background: on ? "var(--gold)" : "var(--dim)" }} />
+    <button
+      onClick={onChange}
+      className="group flex w-full items-center justify-between gap-2.5 rounded-lg border px-3 py-2 text-left transition-all duration-200"
+      style={{
+        borderColor: on ? "var(--line)" : "var(--line-soft)",
+        background: on ? "var(--bg2)" : "var(--bg1)",
+        opacity: on ? 1 : 0.6,
+      }}
+    >
+      <div>
+        <span
+          className="block font-mono text-[10.5px] font-bold tracking-wide"
+          style={{ color: on ? "var(--ink)" : "var(--muted)" }}
+        >
+          {label}
+        </span>
+        <span className="block font-body text-[9.5px] text-[var(--dim)] leading-tight mt-0.5">
+          {desc}
+        </span>
+      </div>
+      <span
+        className="relative h-4 w-7 shrink-0 rounded-full transition-colors duration-200"
+        style={{ background: on ? "rgba(232,180,76,0.35)" : "var(--bg3)" }}
+      >
+        <span
+          className="absolute top-0.5 h-3 w-3 rounded-full transition-all duration-200"
+          style={{
+            left: on ? "14px" : "2px",
+            background: on ? "var(--gold)" : "var(--dim)",
+          }}
+        />
       </span>
     </button>
   );
 }
 
 export default function ConsolePanel({ cfg, onCfg, onAoi, st, stats }: Props) {
-  const slEst = Math.max(st.atr + Math.max(0.12 * st.atr, 0.25), 0.5) + cfg.spread / 2;
-  const ozEst = Math.min(cfg.riskUSD / (slEst * cfg.pointValue), 300);
-  const tpEst = slEst * cfg.rr;
-
-  const idCard = (active: boolean, color: string) => ({
-    borderColor: active ? color : "var(--line-soft)",
-    background: active ? "var(--bg2)" : "var(--bg1)",
-    boxShadow: active ? `0 0 0 1px ${color}55, 0 0 22px ${color}22` : "none",
+  // Collapsible section states
+  const [openSections, setOpenSections] = useState<Record<string, boolean>>({
+    s1_gateway: true,
+    s2_strategy: true,
+    s3_structure: false,
+    s4_candles: false,
+    s5_risk: true,
+    s6_discipline: false,
   });
 
+  const toggleSection = (key: string) => {
+    setOpenSections((prev) => ({ ...prev, [key]: !prev[key] }));
+  };
+
+  // Live estimated risk calculations
+  const slEst = Math.max(st.atr + Math.max(0.12 * st.atr, 0.25), 0.5) + cfg.spread / 2;
+  const targetRisk =
+    cfg.sizingMode === "percentEquity"
+      ? st.balance * ((cfg.equityRiskPct || 2.0) / 100)
+      : cfg.sizingMode === "fractionalKelly"
+      ? st.balance * Math.max(0.01, (cfg.kellyFraction || 0.35) * 0.04)
+      : cfg.riskUSD;
+
+  const ozEst = Math.min(targetRisk / (slEst * cfg.pointValue), 300);
+  const tpEst = slEst * cfg.rr;
+
+  // 1-Click Institutional Presets
+  const applyPreset = (preset: "prop_firm" | "day_trader" | "momentum" | "scalper") => {
+    switch (preset) {
+      case "prop_firm":
+        onCfg({
+          sizingMode: "percentEquity",
+          equityRiskPct: 1.0,
+          maxDailySL: 2,
+          rejThresh: 0.65,
+          rr: 2.5,
+          autoBreakeven: true,
+          trailingStop: true,
+          strategyMode: "single",
+        });
+        break;
+      case "day_trader":
+        onCfg({
+          sizingMode: "percentEquity",
+          equityRiskPct: 2.0,
+          maxDailySL: 2,
+          rejThresh: 0.55,
+          rr: 2.0,
+          autoBreakeven: true,
+          trailingStop: true,
+          strategyMode: "multi_confluence",
+          minConfluenceCount: 2,
+        });
+        break;
+      case "momentum":
+        onCfg({
+          sizingMode: "percentEquity",
+          equityRiskPct: 2.5,
+          maxDailySL: 3,
+          rejThresh: 0.48,
+          powerAtr: 1.3,
+          rr: 3.0,
+          trailingStop: true,
+          selectedStrategy: "session_breakout",
+        });
+        break;
+      case "scalper":
+        onCfg({
+          sizingMode: "percentEquity",
+          equityRiskPct: 0.75,
+          maxDailySL: 3,
+          rejThresh: 0.5,
+          rr: 1.5,
+          autoBreakeven: true,
+          beThresholdR: 0.8,
+          selectedStrategy: "rsi_exhaustion",
+        });
+        break;
+    }
+  };
+
   return (
-    <div className="glass-panel rise-in p-4" style={{ animationDelay: "0.15s" }}>
-      <div className="panel-title mb-3 font-bold text-white tracking-wider">Engine Console</div>
+    <div
+      className="rounded-xl border overflow-hidden shadow-xl font-mono text-[11px] flex flex-col bg-[var(--bg1)]"
+      style={{ borderColor: "var(--line)" }}
+    >
+      {/* Header with Title & Quick Presets */}
+      <div
+        className="border-b p-3 bg-[#090d16]"
+        style={{ borderColor: "var(--line)" }}
+      >
+        <div className="flex items-center justify-between mb-2">
+          <div className="flex items-center gap-2">
+            <span className="flex h-5 w-5 items-center justify-center rounded bg-[var(--gold)] text-black font-black text-[10px]">
+              ⚙
+            </span>
+            <span className="font-extrabold text-white text-[11.5px] tracking-wider">
+              ENGINE CONTROLS & RISK DESK
+            </span>
+          </div>
 
-      {/* ---- execution mode ---- */}
-      <div className="mb-4">
-        <div className="mb-2 font-mono text-[9px] tracking-[0.22em] text-[var(--dim)]">STEP 0 · EXECUTION MODE</div>
-        <div className="space-y-1.5">
-          <Toggle
-            label="ACTION CENTER"
-            desc="Signals queue for your approve / reject — every decision scored"
-            on={cfg.actionCenter}
-            onChange={() => onCfg({ actionCenter: !cfg.actionCenter })}
-          />
-          <Toggle
-            label="TRADING WINDOW"
-            desc="Scheduler arms the engine only inside marked hours"
-            on={cfg.windowEnabled}
-            onChange={() => onCfg({ windowEnabled: !cfg.windowEnabled })}
-          />
-        </div>
-      </div>
-
-      {/* ---- identity ---- */}
-      <div className="mb-4">
-        <div className="mb-2 font-mono text-[9px] tracking-[0.22em] text-[var(--dim)]">STEP 1 · TRADING IDENTITY</div>
-        <div className="grid grid-cols-1 gap-2">
-          <button onClick={() => onCfg({ identity: "reversal" })} className="rounded-md border p-3 text-left transition-all duration-200 hover:translate-y-[-1px]" style={idCard(cfg.identity === "reversal", "var(--gold)")}>
-            <div className="flex items-center justify-between">
-              <span className="flex items-center gap-2">
-                <svg width="20" height="16" viewBox="0 0 20 16" fill="none" aria-hidden>
-                  <path d="M1 4h18" stroke="var(--gold)" strokeWidth="1.2" strokeDasharray="3 2" />
-                  <path d="M10 15V7.5M10 7.5L7 10M10 7.5l3 2.5" stroke="var(--long)" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
-                  <path d="M10 3.5V1" stroke="var(--muted)" strokeWidth="1.2" strokeLinecap="round" />
-                </svg>
-                <span className="font-display text-[12.5px] font-bold tracking-wide">REVERSAL / TRAP</span>
-              </span>
-              {cfg.identity === "reversal" && <span className="rounded-sm px-1.5 py-px font-mono text-[8px] font-bold tracking-widest" style={{ color: "var(--gold)", background: "rgba(232,180,76,0.14)" }}>ACTIVE</span>}
-            </div>
-            <div className="mt-1 font-body text-[10.5px] leading-snug text-[var(--muted)]">
-              Buy low · sell high. Sweep an AOI, reject, enter on the LPR/HPR close.
-            </div>
-            <div className="mt-1.5 font-mono text-[8.5px] tracking-[0.16em]" style={{ color: "var(--gold)" }}>★ RECOMMENDED FOR SOLO TRADERS</div>
-          </button>
-
-          <button onClick={() => onCfg({ identity: "breakout" })} className="rounded-md border p-3 text-left transition-all duration-200 hover:translate-y-[-1px]" style={idCard(cfg.identity === "breakout", "var(--info)")}>
-            <div className="flex items-center justify-between">
-              <span className="flex items-center gap-2">
-                <svg width="20" height="16" viewBox="0 0 20 16" fill="none" aria-hidden>
-                  <path d="M1 10h18" stroke="var(--info)" strokeWidth="1.2" strokeDasharray="3 2" />
-                  <rect x="8" y="2" width="4" height="8" rx="1" fill="var(--long)" />
-                  <path d="M10 1v1M10 12v2.5" stroke="var(--muted)" strokeWidth="1.2" strokeLinecap="round" />
-                </svg>
-                <span className="font-display text-[12.5px] font-bold tracking-wide">BREAKOUT / MOMENTUM</span>
-              </span>
-              {cfg.identity === "breakout" && <span className="rounded-sm px-1.5 py-px font-mono text-[8px] font-bold tracking-widest" style={{ color: "var(--info)", background: "rgba(110,155,216,0.14)" }}>ACTIVE</span>}
-            </div>
-            <div className="mt-1 font-body text-[10.5px] leading-snug text-[var(--muted)]">
-              Buy higher · sell lower. Approach, pull back, then a power candle breaks the AOI.
-            </div>
-          </button>
-        </div>
-      </div>
-
-      {/* ---- risk engine ---- */}
-      <div className="mb-4 rounded-md border p-3" style={{ borderColor: "var(--line-soft)", background: "var(--bg1)" }}>
-        <div className="mb-2 flex items-center justify-between">
-          <span className="font-mono text-[9px] tracking-[0.22em] text-[var(--dim)]">STEP 5 · RISK & SIZING ENGINE</span>
-          <span className="font-mono text-[10px] text-[var(--muted)]">BAL <span className="font-semibold text-[var(--ink)]">{fmtUSD(st.balance)}</span></span>
+          <span className="text-[8.5px] px-1.5 py-0.5 rounded font-black bg-[var(--gold)]/15 text-[var(--gold)]">
+            INSTITUTIONAL
+          </span>
         </div>
 
-        {/* Position Sizing Mode Tabs */}
-        <div className="mb-3">
-          <span className="mb-1 block font-mono text-[9px] tracking-[0.16em] text-[var(--muted)]">SIZING ALGORITHM</span>
-          <div className="flex overflow-hidden rounded-md border" style={{ borderColor: "var(--line)" }}>
+        {/* 1-Click Quick Presets Row */}
+        <div>
+          <span className="text-[8px] text-[var(--dim)] font-bold uppercase tracking-wider block mb-1">
+            QUICK STRATEGY PRESETS
+          </span>
+          <div className="grid grid-cols-4 gap-1 text-[9px]">
             <button
-              onClick={() => onCfg({ sizingMode: "fixedUSD" })}
-              className="flex-1 py-1 font-mono text-[10px] font-bold transition-colors"
-              style={{
-                background: (cfg.sizingMode || "percentEquity") === "fixedUSD" ? "rgba(232,180,76,0.18)" : "var(--bg2)",
-                color: (cfg.sizingMode || "percentEquity") === "fixedUSD" ? "var(--gold-hi)" : "var(--muted)",
-              }}
+              onClick={() => applyPreset("prop_firm")}
+              className="py-1 px-1 rounded border border-[#2fc98f]/40 bg-[#2fc98f]/10 text-[#2fc98f] font-bold hover:bg-[#2fc98f]/20 transition-all truncate"
+              title="1% Risk · 1:2.5 R:R · Conservative"
             >
-              Fixed USD
+              🛡️ Prop Firm
             </button>
             <button
-              onClick={() => onCfg({ sizingMode: "percentEquity" })}
-              className="flex-1 py-1 font-mono text-[10px] font-bold transition-colors"
-              style={{
-                background: cfg.sizingMode === "percentEquity" ? "rgba(232,180,76,0.18)" : "var(--bg2)",
-                color: cfg.sizingMode === "percentEquity" ? "var(--gold-hi)" : "var(--muted)",
-              }}
+              onClick={() => applyPreset("day_trader")}
+              className="py-1 px-1 rounded border border-[var(--gold)]/40 bg-[var(--gold)]/10 text-[var(--gold)] font-bold hover:bg-[var(--gold)]/20 transition-all truncate"
+              title="2% Risk · 1:2.0 R:R · Balanced"
             >
-              % Equity
+              ⚡ Day Trade
             </button>
             <button
-              onClick={() => onCfg({ sizingMode: "fractionalKelly" })}
-              className="flex-1 py-1 font-mono text-[10px] font-bold transition-colors"
-              style={{
-                background: cfg.sizingMode === "fractionalKelly" ? "rgba(232,180,76,0.18)" : "var(--bg2)",
-                color: cfg.sizingMode === "fractionalKelly" ? "var(--gold-hi)" : "var(--muted)",
-              }}
+              onClick={() => applyPreset("momentum")}
+              className="py-1 px-1 rounded border border-[#388bfd]/40 bg-[#388bfd]/10 text-[#388bfd] font-bold hover:bg-[#388bfd]/20 transition-all truncate"
+              title="2.5% Risk · 1:3.0 R:R · Trend Breakouts"
             >
-              Kelly Criterion
+              🚀 Momentum
+            </button>
+            <button
+              onClick={() => applyPreset("scalper")}
+              className="py-1 px-1 rounded border border-[#a371f7]/40 bg-[#a371f7]/10 text-[#a371f7] font-bold hover:bg-[#a371f7]/20 transition-all truncate"
+              title="0.75% Risk · 1:1.5 R:R · Quick Scalps"
+            >
+              🎯 Scalper
             </button>
           </div>
         </div>
+      </div>
 
-        <div className="mb-3 grid grid-cols-2 gap-2">
-          {cfg.sizingMode === "percentEquity" ? (
-            <label className="block">
-              <span className="mb-1 block font-mono text-[9px] tracking-[0.16em] text-[var(--muted)]">EQUITY RISK (%)</span>
-              <input
-                type="number"
-                min={0.5}
-                max={10}
-                step={0.5}
-                value={cfg.equityRiskPct || 2.0}
-                onChange={(e) => onCfg({ equityRiskPct: Math.max(0.5, Math.min(10, Number(e.target.value) || 2)) })}
-                className="w-full rounded-md border px-2 py-1.5 font-mono text-[13px] font-semibold outline-none transition-colors focus:border-[var(--gold)]"
-                style={{ borderColor: "var(--line)", background: "var(--bg2)", color: "var(--gold-hi)" }}
+      {/* Accordion Pipeline Sections (Stages 1 through 6) */}
+      <div className="p-2.5 space-y-2 max-h-[620px] overflow-y-auto">
+        {/* STAGE 1: EXECUTION GATEWAY */}
+        <div className="rounded-lg border overflow-hidden bg-[#090d16]" style={{ borderColor: "var(--line)" }}>
+          <button
+            onClick={() => toggleSection("s1_gateway")}
+            className="w-full px-3 py-2 flex items-center justify-between font-bold text-[10px] text-[var(--gold-hi)] bg-[var(--bg2)] hover:bg-[#151f31] transition-all"
+          >
+            <span>STAGE 1 · EXECUTION GATEWAY</span>
+            <span>{openSections.s1_gateway ? "▲" : "▼"}</span>
+          </button>
+
+          {openSections.s1_gateway && (
+            <div className="p-2.5 space-y-1.5">
+              <Toggle
+                label="ACTION CENTER (SUPERVISED QUEUE)"
+                desc="Signals queue for your manual approve / reject — every decision scored"
+                on={cfg.actionCenter}
+                onChange={() => onCfg({ actionCenter: !cfg.actionCenter })}
               />
-            </label>
-          ) : cfg.sizingMode === "fractionalKelly" ? (
-            <label className="block">
-              <span className="mb-1 block font-mono text-[9px] tracking-[0.16em] text-[var(--muted)]">KELLY FRACTION</span>
-              <input
-                type="number"
-                min={0.1}
-                max={1.0}
-                step={0.05}
-                value={cfg.kellyFraction || 0.35}
-                onChange={(e) => onCfg({ kellyFraction: Math.max(0.1, Math.min(1.0, Number(e.target.value) || 0.35)) })}
-                className="w-full rounded-md border px-2 py-1.5 font-mono text-[13px] font-semibold outline-none transition-colors focus:border-[var(--gold)]"
-                style={{ borderColor: "var(--line)", background: "var(--bg2)", color: "var(--gold-hi)" }}
+              <Toggle
+                label="TRADING HOURS WINDOW"
+                desc="Enforces trading only during marked schedule hours"
+                on={cfg.windowEnabled}
+                onChange={() => onCfg({ windowEnabled: !cfg.windowEnabled })}
               />
-            </label>
-          ) : (
-            <label className="block">
-              <span className="mb-1 block font-mono text-[9px] tracking-[0.16em] text-[var(--muted)]">RISK / TRADE (USD)</span>
-              <input
-                type="number"
-                min={25}
-                max={5000}
-                step={25}
-                value={cfg.riskUSD}
-                onChange={(e) => onCfg({ riskUSD: Math.max(25, Math.min(5000, Number(e.target.value) || 25)) })}
-                className="w-full rounded-md border px-2 py-1.5 font-mono text-[13px] font-semibold outline-none transition-colors focus:border-[var(--gold)]"
-                style={{ borderColor: "var(--line)", background: "var(--bg2)", color: "var(--gold-hi)" }}
-              />
-            </label>
+            </div>
           )}
-
-          <div>
-            <span className="mb-1 block font-mono text-[9px] tracking-[0.16em] text-[var(--muted)]">MAX DAILY SL HITS</span>
-            <div className="flex overflow-hidden rounded-md border" style={{ borderColor: "var(--line)" }}>
-              {[1, 2, 3].map((n) => (
-                <button key={n} onClick={() => onCfg({ maxDailySL: n })} className="seg-btn flex-1 py-1.5 font-mono text-[12px] font-bold"
-                  style={{ background: cfg.maxDailySL === n ? "rgba(240,84,108,0.16)" : "var(--bg2)", color: cfg.maxDailySL === n ? "var(--short)" : "var(--muted)" }}>
-                  {n}
-                </button>
-              ))}
-            </div>
-          </div>
         </div>
 
-        <div className="space-y-3">
-          <Slider label="RISK : REWARD TARGET" value={cfg.rr} min={1.5} max={4} step={0.1} display={`1 : ${cfg.rr.toFixed(1)}`} onChange={(v) => onCfg({ rr: v })} />
-          <Slider label="MODELED SPREAD (FRICTION)" value={cfg.spread} min={0} max={0.6} step={0.05} display={`$${cfg.spread.toFixed(2)}`} onChange={(v) => onCfg({ spread: v })} />
-          <Slider label="SLIPPAGE MODEL (POINTS)" value={cfg.slippagePoints || 0.15} min={0} max={0.5} step={0.05} display={`±${(cfg.slippagePoints || 0.15).toFixed(2)} pts`} onChange={(v) => onCfg({ slippagePoints: v })} />
-          
-          <div className="pt-1">
-            <Toggle
-              label="TRAILING STOP LOSS"
-              desc={`Locks profit past +${(cfg.trailThresholdR || 1.5).toFixed(1)}R at ${(cfg.trailAtrDist || 1.0).toFixed(1)}× ATR`}
-              on={!!cfg.trailingStop}
-              onChange={() => onCfg({ trailingStop: !cfg.trailingStop })}
-            />
-          </div>
+        {/* STAGE 2: STRATEGY CORE & CONFLUENCE */}
+        <div className="rounded-lg border overflow-hidden bg-[#090d16]" style={{ borderColor: "var(--line)" }}>
+          <button
+            onClick={() => toggleSection("s2_strategy")}
+            className="w-full px-3 py-2 flex items-center justify-between font-bold text-[10px] text-[var(--gold-hi)] bg-[var(--bg2)] hover:bg-[#151f31] transition-all"
+          >
+            <span>STAGE 2 · STRATEGY CORE & CONFLUENCE</span>
+            <span>{openSections.s2_strategy ? "▲" : "▼"}</span>
+          </button>
 
-          <div className="grid grid-cols-3 gap-2 rounded-md border border-dashed px-2.5 py-2 font-mono text-[10px]" style={{ borderColor: "var(--line)" }}>
-            <div>
-              <div className="text-[8px] tracking-[0.16em] text-[var(--dim)]">EST. STOP</div>
-              <div className="font-semibold text-[var(--ink)]">${slEst.toFixed(2)}</div>
-            </div>
-            <div>
-              <div className="text-[8px] tracking-[0.16em] text-[var(--dim)]">SIZE</div>
-              <div className="font-semibold text-[var(--gold-hi)]">{ozEst.toFixed(1)} oz</div>
-            </div>
-            <div>
-              <div className="text-[8px] tracking-[0.16em] text-[var(--dim)]">TP TARGET</div>
-              <div className="font-semibold text-[var(--long)]">+${tpEst.toFixed(2)}/oz</div>
-            </div>
-          </div>
-        </div>
-      </div>
+          {openSections.s2_strategy && (
+            <div className="p-2.5 space-y-2.5">
+              <div>
+                <span className="text-[8.5px] text-[var(--dim)] font-bold block mb-1">EXECUTION MODE</span>
+                <div className="grid grid-cols-2 gap-1.5">
+                  <button
+                    onClick={() => onCfg({ strategyMode: "single" })}
+                    className={`py-1 px-2 rounded font-bold text-[9.5px] transition-all ${
+                      cfg.strategyMode === "single"
+                        ? "bg-[var(--gold)] text-black font-black"
+                        : "border border-[var(--line)] text-[var(--muted)]"
+                    }`}
+                  >
+                    Single Strategy
+                  </button>
+                  <button
+                    onClick={() => onCfg({ strategyMode: "multi_confluence" })}
+                    className={`py-1 px-2 rounded font-bold text-[9.5px] transition-all ${
+                      cfg.strategyMode === "multi_confluence"
+                        ? "bg-[var(--long)] text-black font-black"
+                        : "border border-[var(--line)] text-[var(--muted)]"
+                    }`}
+                  >
+                    Multi-Confluence
+                  </button>
+                </div>
+              </div>
 
-      {/* ---- AOI filters ---- */}
-      <div className="mb-4">
-        <div className="mb-2 font-mono text-[9px] tracking-[0.22em] text-[var(--dim)]">STEP 2 · AREAS OF INTEREST</div>
-        <div className="space-y-1.5">
-          <Toggle label="PDH / PDL · CDH / CDL" desc="Previous-day & live intraday extremes" on={cfg.aoi.pdh} onChange={() => onAoi({ pdh: !cfg.aoi.pdh })} />
-          <Toggle label="TRIPLE TOPS / BOTTOMS" desc="Three pivots within tolerance band" on={cfg.aoi.triple} onChange={() => onAoi({ triple: !cfg.aoi.triple })} />
-          <Toggle label="ORDER BLOCKS + FVG" desc="Expansion origin beside fair value gaps" on={cfg.aoi.ob} onChange={() => onAoi({ ob: !cfg.aoi.ob })} />
-          <Toggle label="SESSION LEVELS" desc="London · New York · overlap extremes" on={cfg.aoi.session} onChange={() => onAoi({ session: !cfg.aoi.session })} />
-        </div>
-        <div className="mt-2">
-          <Slider label="TRIPLE PIVOT TOLERANCE" value={cfg.tripleTol} min={0.05} max={0.4} step={0.01} display={`±${cfg.tripleTol.toFixed(2)}%`} onChange={(v) => onCfg({ tripleTol: v })} />
-        </div>
-      </div>
-
-      {/* ---- reaction filters ---- */}
-      <div className="mb-4">
-        <div className="mb-2 font-mono text-[9px] tracking-[0.22em] text-[var(--dim)]">STEP 3 · REACTION CANDLES</div>
-        <div className="space-y-3">
-          <Slider label="REJECTION WICK RATIO (LPR/HPR)" value={cfg.rejThresh} min={0.35} max={0.7} step={0.01} display={`${Math.round(cfg.rejThresh * 100)}% of range`} onChange={(v) => onCfg({ rejThresh: v })} />
-          <Slider label="POWER CANDLE MIN RANGE" value={cfg.powerAtr} min={0.8} max={2.2} step={0.05} display={`${cfg.powerAtr.toFixed(2)}× ATR`} onChange={(v) => onCfg({ powerAtr: v })} />
-        </div>
-      </div>
-
-      {/* ---- session ledger ---- */}
-      <div>
-        <div className="mb-2 font-mono text-[9px] tracking-[0.22em] text-[var(--dim)]">STEP 6 · DISCIPLINE LEDGER</div>
-        <div className="grid grid-cols-2 gap-1.5 font-mono text-[10.5px]">
-          <div className="rounded-md border px-2.5 py-2" style={{ borderColor: "var(--line-soft)", background: "var(--bg1)" }}>
-            <div className="text-[8px] tracking-[0.16em] text-[var(--dim)]">DAILY SL USED</div>
-            <div className="text-[15px] font-bold" style={{ color: st.dailySL >= cfg.maxDailySL ? "var(--short)" : "var(--ink)" }}>{st.dailySL}<span className="text-[10px] text-[var(--dim)]">/{cfg.maxDailySL}</span></div>
-          </div>
-          <div className="rounded-md border px-2.5 py-2" style={{ borderColor: "var(--line-soft)", background: "var(--bg1)" }}>
-            <div className="text-[8px] tracking-[0.16em] text-[var(--dim)]">ENGINE STATE</div>
-            <div className="text-[15px] font-bold" style={{ color: st.halted ? "var(--short)" : st.open ? "var(--gold)" : "var(--long)" }}>
-              {st.halted ? "HALTED" : st.open ? "IN TRADE" : "ARMED"}
+              <div>
+                <span className="text-[8.5px] text-[var(--dim)] font-bold block mb-1">PRIMARY STRATEGY</span>
+                <select
+                  value={cfg.selectedStrategy || "sweep_reversal"}
+                  onChange={(e) => onCfg({ selectedStrategy: e.target.value as StrategyId })}
+                  className="w-full rounded border px-2 py-1 font-bold text-[10.5px] outline-none cursor-pointer bg-[var(--bg1)] text-[var(--gold)]"
+                  style={{ borderColor: "var(--line)" }}
+                >
+                  {STRATEGY_DEFINITIONS.map((s) => (
+                    <option key={s.id} value={s.id} className="bg-[#0e1522] text-white">
+                      {s.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
             </div>
-          </div>
-          <div className="col-span-2 rounded-md border px-2.5 py-2 font-body text-[10px] italic leading-snug text-[var(--muted)]" style={{ borderColor: "var(--line-soft)", background: "var(--bg1)" }}>
-            {st.halted
-              ? "Two clean losses is a full day's tuition. The platform is closed — tomorrow is a new edge."
-              : "Hit the daily limit and the engine closes the platform. No overrides, no revenge trades."}
-          </div>
+          )}
+        </div>
+
+        {/* STAGE 3: MARKET STRUCTURE & AOI FILTERS */}
+        <div className="rounded-lg border overflow-hidden bg-[#090d16]" style={{ borderColor: "var(--line)" }}>
+          <button
+            onClick={() => toggleSection("s3_structure")}
+            className="w-full px-3 py-2 flex items-center justify-between font-bold text-[10px] text-[var(--gold-hi)] bg-[var(--bg2)] hover:bg-[#151f31] transition-all"
+          >
+            <span>STAGE 3 · MARKET STRUCTURE & AOI FILTERS</span>
+            <span>{openSections.s3_structure ? "▲" : "▼"}</span>
+          </button>
+
+          {openSections.s3_structure && (
+            <div className="p-2.5 space-y-1.5">
+              <Toggle
+                label="PDH / PDL & INTRADAY EXTREMES"
+                desc="Previous-day & live intraday liquidity extremes"
+                on={cfg.aoi.pdh}
+                onChange={() => onAoi({ pdh: !cfg.aoi.pdh })}
+              />
+              <Toggle
+                label="ORDER BLOCKS & FAIR VALUE GAPS"
+                desc="Displacement origin beside 3-candle FVG imbalances"
+                on={cfg.aoi.ob}
+                onChange={() => onAoi({ ob: !cfg.aoi.ob })}
+              />
+              <Toggle
+                label="SESSION HIGH & LOW LEVELS"
+                desc="London, New York, and Overlap extremes"
+                on={cfg.aoi.session}
+                onChange={() => onAoi({ session: !cfg.aoi.session })}
+              />
+              <Toggle
+                label="TRIPLE TOPS & BOTTOMS"
+                desc="Three pivot peaks/valleys within tolerance band"
+                on={cfg.aoi.triple}
+                onChange={() => onAoi({ triple: !cfg.aoi.triple })}
+              />
+            </div>
+          )}
+        </div>
+
+        {/* STAGE 4: REACTION CANDLE MATHEMATICS */}
+        <div className="rounded-lg border overflow-hidden bg-[#090d16]" style={{ borderColor: "var(--line)" }}>
+          <button
+            onClick={() => toggleSection("s4_candles")}
+            className="w-full px-3 py-2 flex items-center justify-between font-bold text-[10px] text-[var(--gold-hi)] bg-[var(--bg2)] hover:bg-[#151f31] transition-all"
+          >
+            <span>STAGE 4 · REACTION CANDLE MATHEMATICS</span>
+            <span>{openSections.s4_candles ? "▲" : "▼"}</span>
+          </button>
+
+          {openSections.s4_candles && (
+            <div className="p-2.5 space-y-3">
+              <Slider
+                label="REJECTION WICK RATIO (LPR/HPR)"
+                value={cfg.rejThresh}
+                min={0.35}
+                max={0.8}
+                step={0.01}
+                display={`${(cfg.rejThresh * 100).toFixed(0)}% of range`}
+                onChange={(v) => onCfg({ rejThresh: v })}
+              />
+
+              <Slider
+                label="POWER CANDLE MIN RANGE"
+                value={cfg.powerAtr}
+                min={0.8}
+                max={2.5}
+                step={0.05}
+                display={`${cfg.powerAtr.toFixed(2)}× ATR`}
+                onChange={(v) => onCfg({ powerAtr: v })}
+              />
+            </div>
+          )}
+        </div>
+
+        {/* STAGE 5: RISK & SIZING ENGINE */}
+        <div className="rounded-lg border overflow-hidden bg-[#090d16]" style={{ borderColor: "var(--line)" }}>
+          <button
+            onClick={() => toggleSection("s5_risk")}
+            className="w-full px-3 py-2 flex items-center justify-between font-bold text-[10px] text-[var(--gold-hi)] bg-[var(--bg2)] hover:bg-[#151f31] transition-all"
+          >
+            <span>STAGE 5 · RISK & SIZING ENGINE</span>
+            <span>{openSections.s5_risk ? "▲" : "▼"}</span>
+          </button>
+
+          {openSections.s5_risk && (
+            <div className="p-2.5 space-y-3">
+              {/* Sizing Mode Tabs */}
+              <div>
+                <span className="text-[8.5px] text-[var(--dim)] font-bold block mb-1">SIZING ALGORITHM</span>
+                <div className="grid grid-cols-3 gap-1">
+                  {(
+                    [
+                      { id: "fixedUSD", label: "Fixed USD" },
+                      { id: "percentEquity", label: "% Equity" },
+                      { id: "fractionalKelly", label: "Kelly Math" },
+                    ] as const
+                  ).map((m) => (
+                    <button
+                      key={m.id}
+                      onClick={() => onCfg({ sizingMode: m.id })}
+                      className={`py-1 px-1.5 rounded font-bold text-[9.5px] transition-all ${
+                        cfg.sizingMode === m.id
+                          ? "bg-[var(--gold)] text-black font-black"
+                          : "border border-[var(--line)] text-[var(--muted)]"
+                      }`}
+                    >
+                      {m.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {cfg.sizingMode === "fixedUSD" && (
+                <Slider
+                  label="RISK PER TRADE (USD)"
+                  value={cfg.riskUSD}
+                  min={50}
+                  max={1500}
+                  step={25}
+                  display={fmtUSD(cfg.riskUSD)}
+                  onChange={(v) => onCfg({ riskUSD: v })}
+                />
+              )}
+
+              {cfg.sizingMode === "percentEquity" && (
+                <Slider
+                  label="EQUITY RISK (%)"
+                  value={cfg.equityRiskPct || 2.0}
+                  min={0.5}
+                  max={5.0}
+                  step={0.25}
+                  display={`${(cfg.equityRiskPct || 2.0).toFixed(2)}%`}
+                  onChange={(v) => onCfg({ equityRiskPct: v })}
+                />
+              )}
+
+              {cfg.sizingMode === "fractionalKelly" && (
+                <Slider
+                  label="KELLY LEVERAGE FRACTION"
+                  value={cfg.kellyFraction || 0.35}
+                  min={0.1}
+                  max={0.8}
+                  step={0.05}
+                  display={`${((cfg.kellyFraction || 0.35) * 100).toFixed(0)}% Kelly`}
+                  onChange={(v) => onCfg({ kellyFraction: v })}
+                />
+              )}
+
+              <Slider
+                label="TARGET RISK : REWARD"
+                value={cfg.rr}
+                min={1.2}
+                max={4.0}
+                step={0.1}
+                display={`1 : ${cfg.rr.toFixed(1)}`}
+                onChange={(v) => onCfg({ rr: v })}
+              />
+
+              {/* Dynamic Geometry Feedback */}
+              <div className="grid grid-cols-3 gap-1 text-[9px] pt-1 border-t border-[var(--line)]">
+                <div className="rounded border p-1 bg-[var(--bg1)]" style={{ borderColor: "var(--line)" }}>
+                  <span className="text-[7.5px] text-[var(--dim)] block">EST. STOP</span>
+                  <span className="font-bold text-[#f0546c]">{fmtP(slEst)}</span>
+                </div>
+                <div className="rounded border p-1 bg-[var(--bg1)]" style={{ borderColor: "var(--line)" }}>
+                  <span className="text-[7.5px] text-[var(--dim)] block">LOTS/SIZE</span>
+                  <span className="font-bold text-[var(--gold)]">{ozEst.toFixed(2)} units</span>
+                </div>
+                <div className="rounded border p-1 bg-[var(--bg1)]" style={{ borderColor: "var(--line)" }}>
+                  <span className="text-[7.5px] text-[var(--dim)] block">TP PROFIT</span>
+                  <span className="font-bold text-[var(--long)]">+{fmtP(tpEst)}/oz</span>
+                </div>
+              </div>
+
+              {/* Automation Toggles */}
+              <div className="space-y-1 pt-1">
+                <Toggle
+                  label="AUTO BREAKEVEN"
+                  desc="Locks stop to entry once trade reaches +1.0R"
+                  on={cfg.autoBreakeven}
+                  onChange={() => onCfg({ autoBreakeven: !cfg.autoBreakeven })}
+                />
+                <Toggle
+                  label="DYNAMIC ATR TRAILING STOP"
+                  desc="Trails stop behind price past +1.5R at 1.0x ATR"
+                  on={cfg.trailingStop}
+                  onChange={() => onCfg({ trailingStop: !cfg.trailingStop })}
+                />
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* STAGE 6: DISCIPLINE GUARD & CIRCUIT BREAKER */}
+        <div className="rounded-lg border overflow-hidden bg-[#090d16]" style={{ borderColor: "var(--line)" }}>
+          <button
+            onClick={() => toggleSection("s6_discipline")}
+            className="w-full px-3 py-2 flex items-center justify-between font-bold text-[10px] text-[var(--gold-hi)] bg-[var(--bg2)] hover:bg-[#151f31] transition-all"
+          >
+            <span>STAGE 6 · DISCIPLINE GUARD & CIRCUIT BREAKER</span>
+            <span>{openSections.s6_discipline ? "▲" : "▼"}</span>
+          </button>
+
+          {openSections.s6_discipline && (
+            <div className="p-2.5 space-y-2">
+              <Slider
+                label="MAX DAILY SL HITS (CIRCUIT BREAKER)"
+                value={cfg.maxDailySL}
+                min={1}
+                max={5}
+                step={1}
+                display={`${cfg.maxDailySL} hits max`}
+                onChange={(v) => onCfg({ maxDailySL: v })}
+              />
+
+              <div className="rounded border p-2 bg-[var(--bg1)] text-[9.5px] space-y-1" style={{ borderColor: "var(--line)" }}>
+                <div className="flex items-center justify-between">
+                  <span className="text-[var(--dim)]">DAILY SL USED:</span>
+                  <span className={`font-bold ${st.dailySL >= cfg.maxDailySL ? "text-[#f0546c]" : "text-white"}`}>
+                    {st.dailySL} / {cfg.maxDailySL}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-[var(--dim)]">ENGINE LOCK STATE:</span>
+                  <span className={`font-bold ${st.halted ? "text-[#f0546c] animate-pulse" : "text-[var(--long)]"}`}>
+                    {st.halted ? "HALTED (LOCKED)" : "ARMED (DISCIPLINED)"}
+                  </span>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       </div>
     </div>
