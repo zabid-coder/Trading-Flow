@@ -28,8 +28,8 @@ export const DEFAULT_CFG: EngineConfig = {
   },
   minConfluenceCount: 2,
   account: 1000,
-  riskUSD: 20,
-  rr: 2.0,
+  riskUSD: 15,
+  rr: 2.5,
   maxDailySL: 2,
   rejThresh: 0.58,
   powerAtr: 1.2,
@@ -46,10 +46,10 @@ export const DEFAULT_CFG: EngineConfig = {
   timeframe: "15m",
   chartView: "native",
   autoBreakeven: true,
-  beThresholdR: 1.0,
+  beThresholdR: 1.2,
   soundEnabled: true,
   sizingMode: "percentEquity",
-  equityRiskPct: 2.0,
+  equityRiskPct: 1.5,
   kellyFraction: 0.35,
   trailingStop: true,
   trailThresholdR: 1.5,
@@ -450,22 +450,35 @@ function planTrade(st: EngineState, cfg: EngineConfig, bar: Bar, side: "LONG" | 
   const maxSl = (cfg.maxSlAtr || 4.0) * atr;
   if (slDist < minSl || slDist > maxSl) return null; // reject degenerate geometry
 
-  // Dynamic Risk Sizing Calculation
+  // Anti-Streak Drawdown Protection: Throttle risk after consecutive losses
+  const closedTrades = st.trades.filter((t) => !t.open);
+  let streakMultiplier = 1.0;
+  if (closedTrades.length >= 2) {
+    const last1 = closedTrades[closedTrades.length - 1];
+    const last2 = closedTrades[closedTrades.length - 2];
+    if ((last1.pnl ?? 0) < 0 && (last2.pnl ?? 0) < 0) {
+      streakMultiplier = 0.5; // Halve risk to protect capital during drawdowns
+    }
+  }
+
+  // Dynamic Risk Sizing Calculation with Asymptotic Capital Decay Protection
   let targetRiskUSD = cfg.riskUSD;
-  if (cfg.sizingMode === "percentEquity") {
-    targetRiskUSD = Math.max(5, st.balance * ((cfg.equityRiskPct || 2.0) / 100));
+  if (cfg.sizingMode === "fixedUSD") {
+    // Hard safety cap: fixed risk cannot exceed 2.0% of current balance
+    targetRiskUSD = Math.min(cfg.riskUSD, st.balance * 0.02) * streakMultiplier;
+  } else if (cfg.sizingMode === "percentEquity") {
+    targetRiskUSD = Math.max(2, st.balance * ((cfg.equityRiskPct || 1.5) / 100) * streakMultiplier);
   } else if (cfg.sizingMode === "fractionalKelly") {
-    const closed = st.trades.filter((t) => !t.open);
-    const wins = closed.filter((t) => (t.pnl ?? 0) > 0).length;
-    const p = closed.length >= 8 ? wins / closed.length : 0.48;
+    const wins = closedTrades.filter((t) => (t.pnl ?? 0) > 0).length;
+    const p = closedTrades.length >= 8 ? wins / closedTrades.length : 0.48;
     const b = Math.max(1.0, cfg.rr);
     const rawKelly = p - (1 - p) / b;
-    const kellyPct = Math.max(0.005, Math.min(0.035, rawKelly * (cfg.kellyFraction || 0.35)));
-    targetRiskUSD = Math.max(5, st.balance * kellyPct);
+    const kellyPct = Math.max(0.005, Math.min(0.03, rawKelly * (cfg.kellyFraction || 0.35)));
+    targetRiskUSD = Math.max(2, st.balance * kellyPct * streakMultiplier);
   }
 
   // Sizing = targetRisk ÷ (stop distance × point value per unit) with margin safety cap
-  const marginCapUnits = (st.balance * 25) / Math.max(1, bar.c * cfg.pointValue);
+  const marginCapUnits = (st.balance * 20) / Math.max(1, bar.c * cfg.pointValue);
   const rawOz = targetRiskUSD / (slDist * cfg.pointValue);
   const oz = Math.max(0.01, Math.min(rawOz, marginCapUnits));
   const risk = oz * slDist * cfg.pointValue;
