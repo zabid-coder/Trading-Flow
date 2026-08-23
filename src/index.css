@@ -241,3 +241,19 @@ input[type="range"]::-webkit-slider-thumb:hover { transform: scale(1.25); }
 .tactile-btn:active {
   transform: translateY(1px) scale(0.98);
 }
+
+/* Smooth Custom Scrollbar */
+.custom-scrollbar::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: #090e18;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background: #1e293b;
+  border-radius: 3px;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: #334155;
+}

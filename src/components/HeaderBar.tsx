@@ -83,35 +83,25 @@ export default function HeaderBar({
         backdropFilter: "blur(16px)",
       }}
     >
-      {/* 1. Left: Brand & Live Account Stats Pill */}
-      <div className="flex items-center gap-3">
-        {/* Brand logo */}
-        <div className="flex items-center gap-2 pr-2 border-r border-[rgba(255,255,255,0.08)]">
-          <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-[var(--gold)]/15 border border-[var(--gold)]/40 text-[var(--gold)] font-extrabold text-sm shadow-[0_0_12px_rgba(232,180,76,0.2)]">
-            TF
-          </span>
-          <span className="font-bold text-sm tracking-wide text-white hidden md:inline">
-            TRADING<span className="text-[var(--gold)]">FLOW</span>
-          </span>
-        </div>
-
+      {/* 1. Left: Live Account Stats Pill & Instrument Selector */}
+      <div className="flex items-center gap-2.5 flex-wrap">
         {/* Live Balance & Equity Glass Badge */}
-        <div className="flex items-center gap-3 bg-[#0d1424]/90 border border-white/10 rounded-lg px-2.5 py-1 text-[11px] shadow-sm">
+        <div className="flex items-center gap-3 bg-[#0d1424]/90 border border-white/10 rounded-lg px-3 py-1.5 text-[11px] shadow-sm">
           <div>
-            <span className="text-[8.5px] text-[var(--dim)] font-semibold tracking-wider block">EQUITY</span>
-            <span className="font-bold text-white">${currentEquity.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+            <span className="text-[8.5px] text-[var(--dim)] font-semibold tracking-wider block font-mono">EQUITY</span>
+            <span className="font-bold text-white font-mono">${currentEquity.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
           </div>
           <div className="h-6 w-px bg-white/10" />
           <div>
-            <span className="text-[8.5px] text-[var(--dim)] font-semibold tracking-wider block">P&L (ALL)</span>
-            <span className={`font-bold ${totalRealizedPnl + floatingPnl >= 0 ? "text-[var(--long)]" : "text-[var(--short)]"}`}>
-              {totalRealizedPnl + floatingPnl >= 0 ? "+" : ""}${(totalRealizedPnl + floatingPnl).toFixed(0)}
+            <span className="text-[8.5px] text-[var(--dim)] font-semibold tracking-wider block font-mono">FLOATING P&L</span>
+            <span className={`font-bold font-mono ${floatingPnl >= 0 ? "text-[var(--long)]" : "text-[var(--short)]"}`}>
+              {floatingPnl >= 0 ? "+" : ""}${floatingPnl.toFixed(2)}
             </span>
           </div>
           <div className="h-6 w-px bg-white/10 hidden sm:block" />
           <div className="hidden sm:block">
-            <span className="text-[8.5px] text-[var(--dim)] font-semibold tracking-wider block">WIN RATE</span>
-            <span className="font-bold text-[var(--gold-hi)]">{winRate.toFixed(0)}%</span>
+            <span className="text-[8.5px] text-[var(--dim)] font-semibold tracking-wider block font-mono">WIN RATE</span>
+            <span className="font-bold text-[var(--gold-hi)] font-mono">{winRate.toFixed(0)}%</span>
           </div>
         </div>
 

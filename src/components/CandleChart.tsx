@@ -350,6 +350,62 @@ export default function CandleChart({
                 );
               })}
 
+            {/* BM Trading Range Breakout EA Overlays */}
+            {cfg.rbEnabled && st.rbHigh != null && st.rbLow != null && (
+              <g className="range-breakout-overlay">
+                {(() => {
+                  const isGold = (cfg.activeSymbol || "").startsWith("XAU");
+                  const pointScale = isGold ? 0.01 : 0.0001;
+                  const buffer = (cfg.rbBufferPoints ?? 20) * pointScale;
+                  const longTrigger = st.rbHigh + buffer;
+                  const shortTrigger = st.rbLow - buffer;
+                  const yHigh = y(st.rbHigh);
+                  const yLow = y(st.rbLow);
+                  const yBuyTrig = y(longTrigger);
+                  const ySellTrig = y(shortTrigger);
+
+                  return (
+                    <>
+                      {/* Shaded Range Channel */}
+                      <rect
+                        x={0}
+                        y={Math.min(yHigh, yLow)}
+                        width={PLOT}
+                        height={Math.max(2, Math.abs(yLow - yHigh))}
+                        fill="rgba(234, 179, 8, 0.05)"
+                        stroke="rgba(234, 179, 8, 0.4)"
+                        strokeWidth="1"
+                        strokeDasharray="4 4"
+                      />
+                      {/* Range High Line */}
+                      <line x1={0} y1={yHigh} x2={PLOT} y2={yHigh} stroke="#eab308" strokeWidth="1.2" />
+                      <text x={PLOT - 160} y={yHigh - 4} fill="#eab308" fontSize="8.5" fontWeight="bold" fontFamily="var(--font-mono)">
+                        RB HIGH: {fmtP(st.rbHigh, activeMeta.digits)}
+                      </text>
+
+                      {/* Range Low Line */}
+                      <line x1={0} y1={yLow} x2={PLOT} y2={yLow} stroke="#eab308" strokeWidth="1.2" />
+                      <text x={PLOT - 160} y={yLow + 10} fill="#eab308" fontSize="8.5" fontWeight="bold" fontFamily="var(--font-mono)">
+                        RB LOW: {fmtP(st.rbLow, activeMeta.digits)}
+                      </text>
+
+                      {/* Buy Trigger Level */}
+                      <line x1={0} y1={yBuyTrig} x2={PLOT} y2={yBuyTrig} stroke="#2fc98f" strokeWidth="1" strokeDasharray="2 2" />
+                      <text x={PLOT - 140} y={yBuyTrig - 4} fill="#2fc98f" fontSize="8" fontWeight="bold" fontFamily="var(--font-mono)">
+                        ▲ BUY TRIGGER: {fmtP(longTrigger, activeMeta.digits)}
+                      </text>
+
+                      {/* Sell Trigger Level */}
+                      <line x1={0} y1={ySellTrig} x2={PLOT} y2={ySellTrig} stroke="#f0546c" strokeWidth="1" strokeDasharray="2 2" />
+                      <text x={PLOT - 140} y={ySellTrig + 10} fill="#f0546c" fontSize="8" fontWeight="bold" fontFamily="var(--font-mono)">
+                        ▼ SELL TRIGGER: {fmtP(shortTrigger, activeMeta.digits)}
+                      </text>
+                    </>
+                  );
+                })()}
+              </g>
+            )}
+
             {/* Candlesticks with Exact Pine Script Highlights */}
             {evaluatedBars.map((item) => {
               const { b, i, isLPR, isHPR, isPowerBull, isPowerBear, bullishTrap, bearishTrap, lowerWickPct, upperWickPct } = item;
