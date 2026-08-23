@@ -219,12 +219,14 @@ export interface AoiFlags {
 export type SizingMode = "fixedUSD" | "percentEquity" | "fractionalKelly";
 
 export type DashboardView =
+  | "dashboard"
+  | "trades"
   | "terminal"
-  | "signals"
-  | "strategyLab"
+  | "strategies"
+  | "analysis"
   | "academy"
-  | "risk"
-  | "settings";
+  | "signals"
+  | "reports";
 
 export type StrategyId =
   | "sweep_reversal"

@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { BrokerConfig, DashboardView, EngineConfig, EngineState, Timeframe } from "./engine/types";
-import { fmtUSD } from "./engine/types";
 import {
   DEFAULT_CFG,
   advance,
@@ -24,7 +23,8 @@ import {
   setAudioMuted,
 } from "./utils/audio";
 import { ToastProvider, useToast } from "./components/Toast";
-import HeaderBar, { SPEEDS } from "./components/HeaderBar";
+import GlobalSidebar from "./components/GlobalSidebar";
+import HeaderBar from "./components/HeaderBar";
 import CandleChart from "./components/CandleChart";
 import PipelineStrip from "./components/PipelineStrip";
 import ActionCenter from "./components/ActionCenter";
@@ -36,11 +36,13 @@ import EventFeed from "./components/EventFeed";
 import BottomTerminalTabs from "./components/BottomTerminalTabs";
 import BrokerSettingsModal from "./components/BrokerSettingsModal";
 import StrategyGuideModal from "./components/StrategyGuideModal";
-import DashboardNav from "./components/DashboardNav";
-import StrategyLabView from "./components/StrategyLabView";
-import VisualAcademyView from "./components/VisualAcademyView";
-import RiskAnalyticsView from "./components/RiskAnalyticsView";
 import UniversalOrderModal from "./components/UniversalOrderModal";
+import DashboardOverviewView from "./components/DashboardOverviewView";
+import TradesLedgerView from "./components/TradesLedgerView";
+import AnalysisMatrixView from "./components/AnalysisMatrixView";
+import StrategiesConfigView from "./components/StrategiesConfigView";
+import ReportsAuditView from "./components/ReportsAuditView";
+import VisualAcademyView from "./components/VisualAcademyView";
 
 function TerminalContent() {
   const { addToast } = useToast();
@@ -57,6 +59,7 @@ function TerminalContent() {
   const [rightTab, setRightTab] = useState<"signals" | "order" | "strategy" | "risk">("signals");
   const [universalOrderOpen, setUniversalOrderOpen] = useState(false);
   const [universalOrderSide, setUniversalOrderSide] = useState<"LONG" | "SHORT">("LONG");
+  const [dashboardView, setDashboardView] = useState<DashboardView>("dashboard");
 
   const [stRef] = useState(() => ({
     current: createEngine(48271 + Math.floor(Math.random() * 900000), DEFAULT_CFG),
@@ -79,7 +82,6 @@ function TerminalContent() {
   // Global Keyboard Shortcuts
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      // Don't intercept typing in inputs or textareas
       const tag = (e.target as HTMLElement)?.tagName?.toLowerCase();
       if (tag === "input" || tag === "textarea" || tag === "select") return;
 
@@ -119,7 +121,7 @@ function TerminalContent() {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [running]);
 
-  // Simulation tick loop (only runs when feedMode === 'simulated')
+  // Simulation tick loop
   useEffect(() => {
     if (!running || cfg.feedMode === "live") return;
     const perTick = speed === 3 ? 3 : 1;
@@ -127,7 +129,6 @@ function TerminalContent() {
       const st = stRef.current;
       if (!st) return;
 
-      const prevOpenCount = st.open ? 1 : 0;
       const prevTradesCount = st.trades.length;
       const prevPendingCount = st.queue.filter((q) => q.status === "PENDING").length;
 
@@ -159,13 +160,14 @@ function TerminalContent() {
           addToast({
             title: "🛑 Stop Loss Hit",
             description: `-$${Math.abs(lastTrade.pnl ?? 0).toFixed(0)} (${lastTrade.setup})`,
-            type: "warning",
+            type: "error",
           });
         }
       }
 
       setTick((t) => t + 1);
-    }, SPEEDS[speed].ms);
+    }, [1150, 430, 150, 55][speed] ?? 430);
+
     return () => window.clearInterval(id);
   }, [running, speed, cfg.feedMode]);
 
@@ -182,39 +184,36 @@ function TerminalContent() {
       const meta = getSymbolMeta(sym);
       patchCfg({ pointValue: meta.pointValue, spread: meta.spread });
 
-      // 1. Fetch real historical bars for active timeframe
       const initialBars = await fetchHistoricalBars(sym, tf, 100);
       if (!isCurrent) return;
 
       stRef.current = createLiveEngine(sym, initialBars, cfgRef.current);
       setTick((t) => t + 1);
 
-      // 2. Connect real-time WebSocket
-      cleanupWs = connectLiveFeed(sym, tf, {
-        onBar: (bar, isClosed) => {
-          const st = stRef.current;
-          if (!st) return;
-          feedLiveBar(st, cfgRef.current, bar, isClosed);
+      cleanupWs = connectLiveFeed(
+        sym,
+        (bar) => {
+          if (!isCurrent) return;
+          const s = stRef.current;
+          if (!s) return;
 
-          // Auto-dispatch check if enabled
-          if (brokerCfgRef.current.autoDispatch) {
-            const pending = st.queue.filter((q) => q.status === "PENDING");
-            for (const q of pending) {
-              onDecide(q.id, true);
-            }
+          const prevTrades = s.trades.length;
+          feedLiveBar(s, cfgRef.current, bar);
+
+          if (s.trades.length > prevTrades) {
+            saveJournalTrades(s.trades);
           }
-
           setTick((t) => t + 1);
         },
-        onStatus: (status, latency) => {
-          const st = stRef.current;
-          if (st) {
-            st.liveStatus = status;
-            st.liveLatency = latency;
-            setTick((t) => t + 1);
-          }
-        },
-      });
+        (status, latency) => {
+          if (!isCurrent) return;
+          const s = stRef.current;
+          if (!s) return;
+          s.liveStatus = status;
+          s.liveLatency = latency;
+          setTick((t) => t + 1);
+        }
+      );
     }
 
     startLive();
@@ -241,33 +240,30 @@ function TerminalContent() {
     if (approve) {
       playOrderFilledSound();
       addToast({
-        title: `Order Approved: ${item.side}`,
-        description: `${item.setup} @ ${item.entry.toFixed(2)}`,
+        title: "Order Approved",
+        description: `${item.side} ${item.oz.toFixed(1)} oz @ ${item.entry.toFixed(2)} dispatched`,
         type: "success",
       });
 
-      if (cfg.feedMode === "live") {
-        item.dispatchStatus = "SENDING";
-        setTick((t) => t + 1);
-
-        try {
-          const res = await dispatchTradeOrder(item, cfg.activeSymbol, brokerCfgRef.current);
-          item.dispatchStatus = res.success ? "SENT" : "FAILED";
-          item.dispatchMsg = res.message;
-          addToast({
-            title: res.success ? "Broker Dispatch: Sent" : "Broker Dispatch: Failed",
-            description: res.message,
-            type: res.success ? "success" : "error",
-          });
-        } catch (err: unknown) {
-          item.dispatchStatus = "FAILED";
-          item.dispatchMsg = err instanceof Error ? err.message : "Dispatch error";
-        }
+      if (brokerCfgRef.current.mt5Connected) {
+        dispatchTradeOrder(
+          {
+            symbol: cfgRef.current.activeSymbol,
+            side: item.side,
+            lots: item.oz,
+            entry: item.entry,
+            sl: item.sl,
+            tp: item.tp,
+            magic: 777001,
+            comment: `Trading Flow: ${item.setup}`,
+          },
+          brokerCfgRef.current
+        );
       }
     } else {
       addToast({
         title: "Signal Rejected",
-        description: `Rejected ${item.setup}`,
+        description: `Passed on ${item.side} setup at ${item.setup}`,
         type: "info",
       });
     }
@@ -276,104 +272,105 @@ function TerminalContent() {
     setTick((t) => t + 1);
   };
 
-  const handleExecuteManual = async (tradeParams: {
-    side: "LONG" | "SHORT";
-    entry: number;
-    sl: number;
-    tp: number;
-    oz: number;
-    risk: number;
-  }) => {
+  const closeOpenPosition = () => {
     const s = stRef.current;
-    if (!s) return;
+    if (!s || !s.open) return;
+    const t = s.open;
+    const lastBar = s.bars[s.bars.length - 1];
+    const exitPrice = lastBar ? lastBar.c : t.entry;
+    const pnl = t.side === "LONG" ? (exitPrice - t.entry) * t.oz : (t.entry - exitPrice) * t.oz;
 
-    const newTrade = {
-      id: s.nextId++,
-      side: tradeParams.side,
-      setup: "MANUAL DISPATCH",
-      family: "DISCRETIONARY",
-      identity: cfg.identity,
-      entryIndex: s.bars.length - 1,
-      entryTime: Date.now(),
-      entry: tradeParams.entry,
-      sl: tradeParams.sl,
-      tp: tradeParams.tp,
-      oz: tradeParams.oz,
-      risk: tradeParams.risk,
-      open: true,
-    };
+    t.exit = exitPrice;
+    t.exitTime = lastBar ? lastBar.t : Date.now();
+    t.pnl = pnl;
+    t.outcome = pnl >= 0 ? "TP" : "SL";
+    t.open = false;
 
-    s.open = newTrade;
-    s.trades.push(newTrade);
-    playOrderFilledSound();
+    s.balance += pnl;
+    s.trades.push(t);
+    s.open = null;
+
+    saveJournalTrades(s.trades);
     addToast({
-      title: `⚡ Manual ${tradeParams.side} Executed`,
-      description: `${tradeParams.oz.toFixed(2)} units @ $${tradeParams.risk} Risk`,
-      type: "success",
+      title: "Position Liquidated",
+      description: `Closed ${t.side} at market. PnL: $${pnl.toFixed(2)}`,
+      type: pnl >= 0 ? "success" : "error",
     });
-
-    if (cfg.feedMode === "live") {
-      await dispatchTradeOrder(newTrade, cfg.activeSymbol, brokerCfgRef.current);
-    }
-
     setTick((t) => t + 1);
   };
 
   const handleMoveToBreakeven = () => {
     const s = stRef.current;
-    if (s && s.open) {
-      moveToBreakeven(s, cfgRef.current);
-      playBeSound();
-      addToast({
-        title: "⚡ Breakeven Locked",
-        description: `Stop moved to entry ${s.open.sl.toFixed(2)}`,
-        type: "success",
-      });
-      setTick((t) => t + 1);
-    }
+    if (!s || !s.open) return;
+    moveToBreakeven(s, cfgRef.current);
+    playBeSound();
+    addToast({
+      title: "⚡ Breakeven Set",
+      description: `Stop loss adjusted to entry: ${s.open.sl.toFixed(2)}`,
+      type: "info",
+    });
+    setTick((t) => t + 1);
   };
 
-  const handlePartialClose = (ratio: number = 0.5) => {
+  const handlePartialClose = (ratio: number) => {
     const s = stRef.current;
-    if (s && s.open) {
-      partialClose(s, cfgRef.current, ratio);
-      playTpSound();
-      addToast({
-        title: `💰 50% Profit Booked`,
-        description: `Scaled out half position`,
-        type: "success",
-      });
-      setTick((t) => t + 1);
-    }
+    if (!s || !s.open) return;
+    const closedOz = s.open.oz * ratio;
+    partialClose(s, cfgRef.current, ratio);
+    addToast({
+      title: `💰 Took ${(ratio * 100).toFixed(0)}% Profit`,
+      description: `Scaled out ${closedOz.toFixed(2)} units. Stop moved to BE.`,
+      type: "success",
+    });
+    setTick((t) => t + 1);
   };
 
-  const closeOpenPosition = () => {
+  const handleExecuteManual = (side: "LONG" | "SHORT", customOz?: number) => {
     const s = stRef.current;
-    if (s && s.open) {
-      const lastBar = s.bars[s.bars.length - 1];
-      const exitPrice = lastBar ? lastBar.c : s.price;
-      const half = cfg.spread / 2;
-      const pnl =
-        s.open.oz *
-        (s.open.side === "LONG"
-          ? exitPrice - half - s.open.entry
-          : s.open.entry - (exitPrice + half));
+    if (!s) return;
+    const lastBar = s.bars[s.bars.length - 1];
+    if (!lastBar) return;
 
-      s.open.open = false;
-      s.open.exit = exitPrice;
-      s.open.exitTime = Date.now();
-      s.open.pnl = pnl;
-      s.balance += pnl;
-      s.open = null;
-
-      saveJournalTrades(s.trades);
+    if (s.open) {
       addToast({
-        title: "Position Liquidated",
-        description: `Closed at ${exitPrice.toFixed(2)} (${pnl >= 0 ? "+" : "-"}$${Math.abs(pnl).toFixed(0)})`,
-        type: "info",
+        title: "Execution Blocked",
+        description: "Position already active. Close current position first.",
+        type: "error",
       });
-      setTick((t) => t + 1);
+      return;
     }
+
+    const atr = s.atr || 2.0;
+    const half = cfg.spread / 2;
+    const entry = side === "LONG" ? lastBar.c + half : lastBar.c - half;
+    const slDist = atr * 1.2;
+    const sl = side === "LONG" ? entry - slDist : entry + slDist;
+    const tp = side === "LONG" ? entry + slDist * cfg.rr : entry - slDist * cfg.rr;
+    const oz = customOz || Math.max(0.1, cfg.riskUSD / (slDist * cfg.pointValue));
+
+    s.open = {
+      id: s.nextId++,
+      side,
+      setup: "MANUAL · ORDER DESK",
+      family: "MANUAL",
+      identity: "breakout",
+      entryIndex: s.bars.length - 1,
+      entryTime: lastBar.t,
+      entry,
+      sl,
+      tp,
+      oz,
+      risk: cfg.riskUSD,
+      open: true,
+    };
+
+    playOrderFilledSound();
+    addToast({
+      title: `⚡ Manual ${side} Dispatched`,
+      description: `${oz.toFixed(2)} oz @ ${entry.toFixed(2)} · SL ${sl.toFixed(2)} · TP ${tp.toFixed(2)}`,
+      type: "success",
+    });
+    setTick((t) => t + 1);
   };
 
   const newScenario = () => {
@@ -431,40 +428,252 @@ function TerminalContent() {
 
   const pendingSignalsCount = st.queue.filter((q) => q.status === "PENDING").length;
 
-  const [dashboardView, setDashboardView] = useState<DashboardView>("terminal");
-
   return (
-    <div className="flex min-h-screen flex-col bg-[#070b13] text-[#c9d1d9] font-sans antialiased selection:bg-[var(--gold)] selection:text-black">
-      {/* Top Header Toolbar */}
-      <HeaderBar
-        st={st}
-        cfg={cfg}
-        running={running}
-        onToggleRun={() => setRunning((r) => !r)}
-        speed={speed}
-        onSpeed={setSpeed}
-        onNewScenario={newScenario}
-        onToggleLiveMode={toggleLiveMode}
-        onSelectSymbol={selectSymbol}
-        onSelectTimeframe={selectTimeframe}
-        onToggleChartView={toggleChartView}
-        onToggleSound={() => patchCfg({ soundEnabled: !cfg.soundEnabled })}
-        onOpenBrokerSettings={() => setBrokerModalOpen(true)}
-        onOpenGuide={() => setDashboardView("academy")}
-        onOpenQuickOrder={(side) => {
-          setUniversalOrderSide(side);
-          setUniversalOrderOpen(true);
-        }}
-        tick={tick}
-      />
-
-      {/* Modular Dashboard Navigation */}
-      <DashboardNav
+    <div className="flex h-screen w-screen overflow-hidden bg-[#070b13] text-[#c9d1d9] font-sans antialiased selection:bg-[var(--gold)] selection:text-black">
+      {/* 1. Left Global Suite Sidebar */}
+      <GlobalSidebar
         activeView={dashboardView}
         onSelectView={setDashboardView}
-        pendingSignalsCount={pendingSignalsCount}
-        openPositionsCount={st.open ? 1 : 0}
+        st={st}
+        cfg={cfg}
+        onOpenBrokerModal={() => setBrokerModalOpen(true)}
+        onToggleSound={() => patchCfg({ soundEnabled: !cfg.soundEnabled })}
+        soundEnabled={cfg.soundEnabled}
       />
+
+      {/* 2. Main Content View Area */}
+      <div className="flex-1 flex flex-col h-screen overflow-hidden">
+        {/* Top Header Toolbar */}
+        <HeaderBar
+          st={st}
+          cfg={cfg}
+          running={running}
+          onToggleRun={() => setRunning((r) => !r)}
+          speed={speed}
+          onSpeed={setSpeed}
+          onNewScenario={newScenario}
+          onToggleLiveMode={toggleLiveMode}
+          onSelectSymbol={selectSymbol}
+          onSelectTimeframe={selectTimeframe}
+          onToggleChartView={toggleChartView}
+          onToggleSound={() => patchCfg({ soundEnabled: !cfg.soundEnabled })}
+          onOpenBrokerSettings={() => setBrokerModalOpen(true)}
+          onOpenGuide={() => setDashboardView("academy")}
+          onOpenQuickOrder={(side) => {
+            setUniversalOrderSide(side);
+            setUniversalOrderOpen(true);
+          }}
+          tick={tick}
+        />
+
+        {/* Dynamic Route Content */}
+        <div className="flex-1 flex overflow-hidden bg-[#080d18] relative">
+          {/* VIEW: DASHBOARD OVERVIEW */}
+          {dashboardView === "dashboard" && (
+            <DashboardOverviewView
+              st={st}
+              cfg={cfg}
+              stats={stats}
+              onNavigateToTrades={() => setDashboardView("trades")}
+              onNavigateToTerminal={() => setDashboardView("terminal")}
+            />
+          )}
+
+          {/* VIEW: TRADES LEDGER */}
+          {dashboardView === "trades" && (
+            <TradesLedgerView st={st} cfg={cfg} />
+          )}
+
+          {/* VIEW: PERFORMANCE ANALYSIS */}
+          {dashboardView === "analysis" && (
+            <AnalysisMatrixView st={st} cfg={cfg} stats={stats} />
+          )}
+
+          {/* VIEW: STRATEGIES & RANGE BREAKOUT EA */}
+          {dashboardView === "strategies" && (
+            <StrategiesConfigView st={st} cfg={cfg} onCfg={patchCfg} />
+          )}
+
+          {/* VIEW: AUDIT REPORTS */}
+          {dashboardView === "reports" && (
+            <ReportsAuditView st={st} cfg={cfg} stats={stats} />
+          )}
+
+          {/* VIEW: VISUAL ACADEMY */}
+          {dashboardView === "academy" && (
+            <VisualAcademyView />
+          )}
+
+          {/* VIEW: SIGNALS QUEUE & DIRECT BROKER WIRE */}
+          {dashboardView === "signals" && (
+            <main className="flex-1 overflow-y-auto p-4 lg:p-6 space-y-4 font-mono text-xs">
+              <div
+                className="rounded-xl border p-4 shadow-lg flex flex-col md:flex-row items-start md:items-center justify-between gap-3"
+                style={{ borderColor: "var(--line)", background: "linear-gradient(180deg, #131c2d 0%, #0e1522 100%)" }}
+              >
+                <div>
+                  <div className="flex items-center gap-2">
+                    <span className="flex h-6 w-6 items-center justify-center rounded-md bg-[var(--gold)] text-black font-extrabold text-xs">
+                      ⚡
+                    </span>
+                    <h1 className="text-base font-bold text-white tracking-wide">
+                      SIGNALS & DIRECT BROKER EXECUTION HUB
+                    </h1>
+                  </div>
+                  <p className="text-[11px] text-[var(--muted)] mt-1">
+                    Real-time algorithmic signal queue, MetaTrader 5 direct order dispatcher, and live execution audit logs.
+                  </p>
+                </div>
+
+                <button
+                  onClick={() => setBrokerModalOpen(true)}
+                  className="px-4 py-2 rounded-lg bg-[var(--gold)]/15 border border-[var(--gold)] text-[var(--gold)] font-bold text-[11px] hover:bg-[var(--gold)]/25 transition-all"
+                >
+                  ⚙️ CONFIGURE BROKER & TELEGRAM
+                </button>
+              </div>
+
+              <div className="grid grid-cols-12 gap-4">
+                <div className="col-span-12 lg:col-span-6">
+                  <ActionCenter st={st} cfg={cfg} onDecide={onDecide} />
+                </div>
+
+                <div className="col-span-12 lg:col-span-6">
+                  <div className="rounded-xl border p-4 bg-[var(--bg1)] h-[500px] flex flex-col" style={{ borderColor: "var(--line)" }}>
+                    <div className="flex items-center justify-between border-b pb-2 mb-2" style={{ borderColor: "var(--line)" }}>
+                      <span className="font-bold text-white text-[12px]">ENGINE EXECUTION WIRE</span>
+                      <span className="text-[9px] text-[var(--dim)]">LIVE EVENT STREAM</span>
+                    </div>
+                    <div className="flex-1 overflow-y-auto">
+                      <EventFeed st={st} />
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </main>
+          )}
+
+          {/* VIEW: LIVE TRADING TERMINAL */}
+          {dashboardView === "terminal" && (
+            <main className="flex-1 overflow-y-auto p-2.5 lg:p-3 custom-scrollbar">
+              <div className="mx-auto grid w-full max-w-[1880px] grid-cols-12 items-start gap-2.5">
+                {/* Left Column: Watchlist */}
+                <section className="hidden md:block md:col-span-3 lg:col-span-2">
+                  <MarketWatchlist
+                    activeSymbol={cfg.activeSymbol}
+                    onSelect={selectSymbol}
+                    price={st.bars[st.bars.length - 1]?.c || st.price}
+                    feedMode={cfg.feedMode}
+                  />
+                </section>
+
+                {/* Center Column: Chart & Dock */}
+                <section className="col-span-12 md:col-span-9 lg:col-span-7 flex flex-col gap-2.5">
+                  <PipelineStrip st={st} />
+
+                  <CandleChart
+                    st={st}
+                    cfg={cfg}
+                    onDecide={onDecide}
+                    onMoveToBreakeven={() => {
+                      moveToBreakeven(st, cfg);
+                      setTick((t) => t + 1);
+                    }}
+                    onPartialClose={(ratio) => {
+                      partialClose(st, cfg, ratio);
+                      setTick((t) => t + 1);
+                    }}
+                  />
+
+                  <BottomTerminalTabs
+                    st={st}
+                    cfg={cfg}
+                    stats={stats}
+                    onClosePosition={closeOpenPosition}
+                    onMoveToBreakeven={handleMoveToBreakeven}
+                    onPartialClose={handlePartialClose}
+                  />
+                </section>
+
+                {/* Right Column: Execution Desk & Radar */}
+                <aside className="col-span-12 lg:col-span-3 flex flex-col gap-2 font-mono">
+                  <div
+                    className="flex items-center rounded-lg border p-0.5"
+                    style={{ borderColor: "var(--line)", background: "var(--bg2)" }}
+                  >
+                    <button
+                      onClick={() => setRightTab("signals")}
+                      className={`flex-1 py-1.5 rounded text-[10px] font-bold transition-all relative ${
+                        rightTab === "signals"
+                          ? "bg-[var(--gold)] text-black font-black"
+                          : "text-[var(--muted)] hover:text-white"
+                      }`}
+                    >
+                      <span>⚡ SIGNALS</span>
+                      {pendingSignalsCount > 0 && (
+                        <span className="ml-1 px-1 py-px rounded-full bg-[var(--short)] text-white text-[8px] font-extrabold animate-bounce">
+                          {pendingSignalsCount}
+                        </span>
+                      )}
+                    </button>
+
+                    <button
+                      onClick={() => setRightTab("order")}
+                      className={`flex-1 py-1.5 rounded text-[10px] font-bold transition-all ${
+                        rightTab === "order"
+                          ? "bg-[var(--gold)] text-black font-black"
+                          : "text-[var(--muted)] hover:text-white"
+                      }`}
+                    >
+                      🎯 ORDER DESK
+                    </button>
+
+                    <button
+                      onClick={() => setRightTab("strategy")}
+                      className={`flex-1 py-1.5 rounded text-[10px] font-bold transition-all ${
+                        rightTab === "strategy"
+                          ? "bg-[var(--gold)] text-black font-black"
+                          : "text-[var(--muted)] hover:text-white"
+                      }`}
+                    >
+                      🧠 RADAR
+                    </button>
+
+                    <button
+                      onClick={() => setRightTab("risk")}
+                      className={`flex-1 py-1.5 rounded text-[10px] font-bold transition-all ${
+                        rightTab === "risk"
+                          ? "bg-[var(--gold)] text-black font-black"
+                          : "text-[var(--muted)] hover:text-white"
+                      }`}
+                    >
+                      🛡️ RISK
+                    </button>
+                  </div>
+
+                  {rightTab === "signals" && (
+                    <div className="min-h-[300px]">
+                      <ActionCenter st={st} cfg={cfg} onDecide={onDecide} />
+                    </div>
+                  )}
+
+                  {rightTab === "order" && (
+                    <OrderDesk st={st} cfg={cfg} onExecuteManual={handleExecuteManual} />
+                  )}
+
+                  {rightTab === "strategy" && (
+                    <StrategyRadar st={st} cfg={cfg} onCfg={patchCfg} />
+                  )}
+
+                  {rightTab === "risk" && (
+                    <ConsolePanel cfg={cfg} onCfg={patchCfg} onAoi={patchAoi} st={st} stats={stats} />
+                  )}
+                </aside>
+              </div>
+            </main>
+          )}
+        </div>
+      </div>
 
       {/* Universal Order Modal */}
       <UniversalOrderModal
@@ -478,15 +687,14 @@ function TerminalContent() {
         onMoveToBreakeven={handleMoveToBreakeven}
       />
 
-      {/* Floating Universal 1-Click Order Pill (Always accessible on all pages) */}
-      <div className="fixed bottom-4 right-4 z-40 flex items-center gap-2 select-none">
+      {/* Floating 1-Click Quick Execution Pill */}
+      <div className="fixed bottom-3 right-4 z-40 flex items-center gap-2 select-none">
         <button
           onClick={() => {
             setUniversalOrderSide("LONG");
             setUniversalOrderOpen(true);
           }}
-          className="px-3.5 py-2 rounded-xl bg-[#2fc98f] text-black font-black text-[11px] tracking-wide shadow-xl hover:brightness-110 active:scale-95 transition-all flex items-center gap-1 border border-black/20"
-          title="Universal BUY (Hotkey: B)"
+          className="px-3.5 py-1.5 rounded-xl bg-[#2fc98f] hover:bg-[#34d399] text-black font-black text-[11px] tracking-wide shadow-lg active:scale-95 transition-all flex items-center gap-1 border border-black/20"
         >
           <span>▲ BUY</span>
         </button>
@@ -496,25 +704,20 @@ function TerminalContent() {
             setUniversalOrderSide("SHORT");
             setUniversalOrderOpen(true);
           }}
-          className="px-3.5 py-2 rounded-xl bg-[#f0546c] text-black font-black text-[11px] tracking-wide shadow-xl hover:brightness-110 active:scale-95 transition-all flex items-center gap-1 border border-black/20"
-          title="Universal SELL (Hotkey: S)"
+          className="px-3.5 py-1.5 rounded-xl bg-[#f0546c] hover:bg-[#fb7185] text-black font-black text-[11px] tracking-wide shadow-lg active:scale-95 transition-all flex items-center gap-1 border border-black/20"
         >
           <span>▼ SELL</span>
         </button>
 
         <button
           onClick={() => setUniversalOrderOpen((v) => !v)}
-          className="px-3.5 py-2 rounded-xl bg-[#090d16]/95 border border-[var(--gold)] text-[var(--gold)] font-extrabold text-[11px] tracking-wide shadow-2xl hover:bg-[#151f33] active:scale-95 transition-all flex items-center gap-1.5 backdrop-blur-md"
-          title="Toggle Universal Order Desk (Hotkey: O)"
+          className="px-3 py-1.5 rounded-xl bg-[#0e1626]/95 border border-[var(--gold)] text-[var(--gold)] font-extrabold text-[11px] tracking-wide shadow-xl hover:bg-[#162238] active:scale-95 transition-all flex items-center gap-1.5 backdrop-blur-md"
         >
-          <span>⚡ ORDER DESK</span>
-          <span className="text-[8.5px] px-1 py-px rounded bg-[var(--gold)]/20 text-[var(--gold-hi)] font-mono">
-            [O]
-          </span>
+          <span>⚡ ORDER DESK [O]</span>
         </button>
       </div>
 
-      {/* Modals */}
+      {/* Settings Modals */}
       <BrokerSettingsModal
         isOpen={brokerModalOpen}
         onClose={() => setBrokerModalOpen(false)}
@@ -526,226 +729,6 @@ function TerminalContent() {
         isOpen={guideModalOpen}
         onClose={() => setGuideModalOpen(false)}
       />
-
-      {/* VIEW 1: TRADING TERMINAL */}
-      {dashboardView === "terminal" && (
-        <main className="mx-auto grid w-full max-w-[1880px] flex-1 grid-cols-12 items-start gap-2.5 p-2.5 lg:p-3 animate-fade-in">
-          {/* Left Column: Watchlist (2 cols on lg, 2 on xl) */}
-          <section className="hidden md:block md:col-span-3 lg:col-span-2">
-            <MarketWatchlist
-              activeSymbol={cfg.activeSymbol}
-              onSelect={selectSymbol}
-              price={st.bars[st.bars.length - 1]?.c || st.price}
-              feedMode={cfg.feedMode}
-            />
-          </section>
-
-          {/* Center Column: Main Interactive Chart & Bottom Dock (7 cols on lg, 7 on xl) */}
-          <section className="col-span-12 md:col-span-9 lg:col-span-7 flex flex-col gap-2.5">
-            {/* Live Pipeline Strip */}
-            <PipelineStrip st={st} />
-
-            {/* Interactive Chart with 1-Click Overlays */}
-            <CandleChart
-              st={st}
-              cfg={cfg}
-              onDecide={onDecide}
-              onMoveToBreakeven={() => {
-                moveToBreakeven(st, cfg);
-                setTick((t) => t + 1);
-              }}
-              onPartialClose={(ratio) => {
-                partialClose(st, cfg, ratio);
-                setTick((t) => t + 1);
-              }}
-            />
-
-            {/* Structured Bottom Dock */}
-            <BottomTerminalTabs
-              st={st}
-              cfg={cfg}
-              stats={stats}
-              onClosePosition={closeOpenPosition}
-              onMoveToBreakeven={handleMoveToBreakeven}
-              onPartialClose={handlePartialClose}
-            />
-          </section>
-
-          {/* Right Column: Execution & Strategy Desk (3 cols on lg, 3 on xl) */}
-          <aside className="col-span-12 lg:col-span-3 flex flex-col gap-2 font-mono">
-            {/* Tab Selector */}
-            <div
-              className="flex items-center rounded-lg border p-0.5"
-              style={{ borderColor: "var(--line)", background: "var(--bg2)" }}
-            >
-              <button
-                onClick={() => setRightTab("signals")}
-                className={`flex-1 py-1.5 rounded text-[10px] font-bold transition-all relative ${
-                  rightTab === "signals"
-                    ? "bg-[var(--gold)] text-black font-black"
-                    : "text-[var(--muted)] hover:text-white"
-                }`}
-              >
-                <span>⚡ SIGNALS</span>
-                {pendingSignalsCount > 0 && (
-                  <span className="ml-1 px-1 py-px rounded-full bg-[var(--short)] text-white text-[8px] font-extrabold animate-bounce">
-                    {pendingSignalsCount}
-                  </span>
-                )}
-              </button>
-
-              <button
-                onClick={() => setRightTab("order")}
-                className={`flex-1 py-1.5 rounded text-[10px] font-bold transition-all ${
-                  rightTab === "order"
-                    ? "bg-[var(--gold)] text-black font-black"
-                    : "text-[var(--muted)] hover:text-white"
-                }`}
-              >
-                🎯 ORDER DESK
-              </button>
-
-              <button
-                onClick={() => setRightTab("strategy")}
-                className={`flex-1 py-1.5 rounded text-[10px] font-bold transition-all ${
-                  rightTab === "strategy"
-                    ? "bg-[var(--gold)] text-black font-black"
-                    : "text-[var(--muted)] hover:text-white"
-                }`}
-              >
-                🧠 RADAR
-              </button>
-
-              <button
-                onClick={() => setRightTab("risk")}
-                className={`flex-1 py-1.5 rounded text-[10px] font-bold transition-all ${
-                  rightTab === "risk"
-                    ? "bg-[var(--gold)] text-black font-black"
-                    : "text-[var(--muted)] hover:text-white"
-                }`}
-              >
-                🛡️ RISK
-              </button>
-            </div>
-
-            {/* Active Tab Panel */}
-            {rightTab === "signals" && (
-              <div className="min-h-[300px]">
-                <ActionCenter st={st} cfg={cfg} onDecide={onDecide} />
-              </div>
-            )}
-
-            {rightTab === "order" && (
-              <OrderDesk st={st} cfg={cfg} onExecuteManual={handleExecuteManual} />
-            )}
-
-            {rightTab === "strategy" && (
-              <StrategyRadar st={st} cfg={cfg} onCfg={patchCfg} />
-            )}
-
-            {rightTab === "risk" && (
-              <ConsolePanel cfg={cfg} onCfg={patchCfg} onAoi={patchAoi} st={st} stats={stats} />
-            )}
-          </aside>
-        </main>
-      )}
-
-      {/* VIEW 2: SIGNALS & EXECUTION HUB */}
-      {dashboardView === "signals" && (
-        <main className="mx-auto w-full max-w-[1720px] flex-1 p-3 space-y-4 animate-fade-in font-mono">
-          <div
-            className="rounded-xl border p-4 shadow-lg flex flex-col md:flex-row items-start md:items-center justify-between gap-3"
-            style={{ borderColor: "var(--line)", background: "linear-gradient(180deg, #131c2d 0%, #0e1522 100%)" }}
-          >
-            <div>
-              <div className="flex items-center gap-2">
-                <span className="flex h-6 w-6 items-center justify-center rounded-md bg-[var(--gold)] text-black font-extrabold text-xs">
-                  ⚡
-                </span>
-                <h1 className="text-base font-bold text-white tracking-wide">
-                  SIGNALS & DIRECT BROKER EXECUTION HUB
-                </h1>
-              </div>
-              <p className="text-[11px] text-[var(--muted)] mt-1">
-                Real-time algorithmic signal queue, MetaTrader 5 direct order dispatcher, and live execution audit logs.
-              </p>
-            </div>
-
-            <button
-              onClick={() => setBrokerModalOpen(true)}
-              className="px-4 py-2 rounded-lg bg-[var(--gold)]/15 border border-[var(--gold)] text-[var(--gold)] font-bold text-[11px] hover:bg-[var(--gold)]/25 transition-all"
-            >
-              ⚙️ CONFIGURE BROKER & TELEGRAM
-            </button>
-          </div>
-
-          <div className="grid grid-cols-12 gap-4">
-            <div className="col-span-12 lg:col-span-6">
-              <ActionCenter st={st} cfg={cfg} onDecide={onDecide} />
-            </div>
-
-            <div className="col-span-12 lg:col-span-6">
-              <div className="rounded-xl border p-4 bg-[var(--bg1)] h-[460px] flex flex-col" style={{ borderColor: "var(--line)" }}>
-                <div className="flex items-center justify-between border-b pb-2 mb-2" style={{ borderColor: "var(--line)" }}>
-                  <span className="font-bold text-white text-[12px]">ENGINE EXECUTION WIRE</span>
-                  <span className="text-[9px] text-[var(--dim)]">LIVE EVENT STREAM</span>
-                </div>
-                <div className="flex-1 overflow-y-auto">
-                  <EventFeed st={st} />
-                </div>
-              </div>
-            </div>
-          </div>
-        </main>
-      )}
-
-      {/* VIEW 3: MULTI-STRATEGY LAB */}
-      {dashboardView === "strategyLab" && (
-        <StrategyLabView st={st} cfg={cfg} onCfg={patchCfg} />
-      )}
-
-      {/* VIEW 4: VISUAL STRATEGY ACADEMY */}
-      {dashboardView === "academy" && (
-        <VisualAcademyView />
-      )}
-
-      {/* VIEW 5: RISK & PORTFOLIO ANALYTICS */}
-      {dashboardView === "risk" && (
-        <RiskAnalyticsView st={st} cfg={cfg} stats={stats} onCfg={patchCfg} />
-      )}
-
-      {/* Terminal Status Footer */}
-      <footer
-        className="border-t px-4 py-2 flex flex-wrap items-center justify-between font-mono text-[10px] text-[var(--dim)]"
-        style={{ borderColor: "var(--line)", background: "#05080e" }}
-      >
-        <div className="flex items-center gap-3">
-          <span className="flex items-center gap-1.5">
-            <span
-              className={`h-2 w-2 rounded-full ${
-                cfg.feedMode === "live" ? "bg-[var(--long)] animate-pulse" : "bg-[var(--gold)]"
-              }`}
-            />
-            <span className="font-bold text-white">
-              {cfg.feedMode === "live"
-                ? `LIVE FEED ONLINE · ${cfg.activeSymbol}`
-                : `SIMULATION CALIBRATED · ${cfg.activeSymbol}`}
-            </span>
-          </span>
-          <span>·</span>
-          <span>TIMEFRAME: {cfg.timeframe.toUpperCase()}</span>
-          <span>·</span>
-          <span>SPREAD: {cfg.spread} pts</span>
-          <span>·</span>
-          <span className="text-[var(--gold-hi)]">HOTKEYS: [SPACE] PAUSE | [1-3] SPEED | [B/S] ORDER | [X] CLOSE | [M] MUTE</span>
-        </div>
-
-        <div className="flex items-center gap-3">
-          <span>ACCOUNT: {fmtUSD(st.balance)}</span>
-          <span>·</span>
-          <span>EQUITY: {fmtUSD(stats.equityNow)}</span>
-        </div>
-      </footer>
     </div>
   );
 }

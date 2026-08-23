@@ -115,3 +115,7 @@ export function exportJournalToCsv(trades: Trade[], symbol: string) {
   link.click();
   document.body.removeChild(link);
 }
+
+export function exportJournalCsv(trades: Trade[], symbol: string = "XAUUSD") {
+  return exportJournalToCsv(trades, symbol);
+}
