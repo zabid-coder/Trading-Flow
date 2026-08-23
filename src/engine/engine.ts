@@ -55,6 +55,9 @@ export const DEFAULT_CFG: EngineConfig = {
   slippagePoints: 0.15,
   minSlAtr: 0.2,
   maxSlAtr: 4.0,
+  trendFilter: true,
+  killzoneFilter: true,
+  confluenceGate: 75,
 };
 
 const seenZones = new WeakMap<EngineState, Set<string>>();
@@ -735,25 +738,153 @@ function evaluate(st: EngineState, cfg: EngineConfig, bar: Bar, cls: CandleClass
   }
 
   if (cfg.identity === "reversal") {
+    /* ------- INSTITUTIONAL FILTER LAYER ------- */
+
+    // Filter 1: Killzone Session Gate
+    if (cfg.killzoneFilter && st.activeKillzone === "OFF_SESSION") {
+      setEval(
+        [
+          { k: "AOI CONTACT", ok: !!nearAoi, v: nearAoi ? nearAoi.label : "none" },
+          { k: "KILLZONE", ok: false, v: `OFF-SESSION (${String(hourOf(bar.t)).padStart(2, "0")}:00 UTC)` },
+          { k: "GATE", ok: false, v: "dead zone — no entries" },
+          { k: "RISK", ok: null, v: "engine resting" },
+        ],
+        "Off-session dead zone (21:00–07:00 UTC). Smart money is absent — no entries until London or NY killzone opens."
+      );
+      return;
+    }
+
     /* ------- RIGHT-SIDE · TRAP / REVERSAL ------- */
     const valid = swept.filter((s) => {
       const cd = st.cooldown[coolKey(s.a)];
-      return cd == null || idx - cd >= 10;
+      if (cd != null && idx - cd < 10) return false;
+      // Filter 3: Eliminate standalone CDH/CDL entries — keep only major static pools
+      if (s.a.kind === "CDH" || s.a.kind === "CDL") return false;
+      // Filter 4: OB requires FVG displacement — check for 3-bar FVG nearby
+      if (s.a.kind === "OB_D" || s.a.kind === "OB_S") {
+        let hasFvg = false;
+        for (let j = Math.max(0, idx - 6); j < idx - 1; j++) {
+          const b1 = st.bars[j], b3 = st.bars[j + 2];
+          if (!b1 || !b3) continue;
+          // bullish FVG: bar3.low > bar1.high (gap up)
+          if (s.a.kind === "OB_D" && b3.l > b1.h && (b3.l - b1.h) >= 0.3 * atr) { hasFvg = true; break; }
+          // bearish FVG: bar3.high < bar1.low (gap down)
+          if (s.a.kind === "OB_S" && b3.h < b1.l && (b1.l - b3.h) >= 0.3 * atr) { hasFvg = true; break; }
+        }
+        if (!hasFvg) return false; // reject naked OB without FVG displacement
+      }
+      return true;
     });
     const longs = valid.filter((s) => s.side === "LONG");
     const shorts = valid.filter((s) => s.side === "SHORT");
 
     let entered = false;
     let chosen: typeof swept[number] | null = null;
+
+    // Pre-compute confluence score for the best candidate
+    const scoreCandidate = (s: typeof swept[number], side: "LONG" | "SHORT"): number => {
+      let score = 0;
+      // 30 pts: Major liquidity pool (PDH, PDL, session extremes, triple top/bottom)
+      const majorKinds = ["PDH", "PDL", "LON_H", "LON_L", "NY_H", "NY_L", "OVL_H", "OVL_L", "TT", "TB"];
+      if (majorKinds.includes(s.a.kind)) score += 30;
+      else score += 10; // minor pool (FVG OB with displacement gets partial credit)
+
+      // 25 pts: Rejection morphology (already confirmed by cls === LPR/HPR)
+      const clsMatch = (side === "LONG" && cls === "LPR") || (side === "SHORT" && cls === "HPR");
+      if (clsMatch) score += 25;
+
+      // 25 pts: Trend alignment (50/200 EMA)
+      const bullTrend = st.ema50 > st.ema200;
+      const bearTrend = st.ema50 < st.ema200;
+      if ((side === "LONG" && bullTrend) || (side === "SHORT" && bearTrend)) score += 25;
+      else if (!cfg.trendFilter) score += 15; // partial credit if filter disabled
+
+      // 20 pts: Killzone timing
+      if (st.activeKillzone === "LONDON" || st.activeKillzone === "NEW_YORK" || st.activeKillzone === "OVERLAP") score += 20;
+      else if (!cfg.killzoneFilter) score += 10;
+
+      return score;
+    };
+
     const tryEnter = (side: "LONG" | "SHORT", a: Aoi, key: string) =>
       cfg.actionCenter ? enqueueSignal(st, cfg, bar, side, a, key) : openTrade(st, cfg, bar, side, a, key);
 
     if (longs.length && cls === "LPR") {
       chosen = longs.reduce((m, s) => (s.dist > m.dist ? s : m), longs[0]);
-      entered = tryEnter("LONG", chosen.a, coolKey(chosen.a));
+
+      // Filter 2: Trend direction — block counter-trend longs in bear regime
+      if (cfg.trendFilter && st.ema50 < st.ema200 && bar.c < st.ema50) {
+        const score = scoreCandidate(chosen, "LONG");
+        st.lastConfluenceScore = score;
+        setEval(
+          [
+            { k: "AOI CONTACT", ok: true, v: `${chosen.a.label} swept` },
+            { k: "TREND", ok: false, v: `BEARISH (EMA50 < EMA200)` },
+            { k: "CONFLUENCE", ok: false, v: `${score}/100 — LONG blocked` },
+            { k: "GATE", ok: false, v: "counter-trend" },
+          ],
+          `${chosen.a.label} swept with LPR rejection, but macro trend is bearish (50 EMA < 200 EMA). Counter-trend LONG blocked.`
+        );
+        chosen = null;
+      }
+
+      // Filter 5: Confluence score gate
+      if (chosen) {
+        const score = scoreCandidate(chosen, "LONG");
+        st.lastConfluenceScore = score;
+        if (score < cfg.confluenceGate) {
+          setEval(
+            [
+              { k: "AOI CONTACT", ok: true, v: chosen.a.label },
+              { k: "REACTION", ok: true, v: clsLabel(cls) },
+              { k: "CONFLUENCE", ok: false, v: `${score}/100 < ${cfg.confluenceGate} gate` },
+              { k: "GATE", ok: false, v: "low confluence" },
+            ],
+            `Signal at ${chosen.a.label} scored ${score}/100 — below ${cfg.confluenceGate} institutional confluence gate. Discarded.`
+          );
+          chosen = null;
+        }
+      }
+
+      if (chosen) entered = tryEnter("LONG", chosen.a, coolKey(chosen.a));
     } else if (shorts.length && cls === "HPR") {
       chosen = shorts.reduce((m, s) => (s.dist > m.dist ? s : m), shorts[0]);
-      entered = tryEnter("SHORT", chosen.a, coolKey(chosen.a));
+
+      // Filter 2: Trend direction — block counter-trend shorts in bull regime
+      if (cfg.trendFilter && st.ema50 > st.ema200 && bar.c > st.ema50) {
+        const score = scoreCandidate(chosen, "SHORT");
+        st.lastConfluenceScore = score;
+        setEval(
+          [
+            { k: "AOI CONTACT", ok: true, v: `${chosen.a.label} swept` },
+            { k: "TREND", ok: false, v: `BULLISH (EMA50 > EMA200)` },
+            { k: "CONFLUENCE", ok: false, v: `${score}/100 — SHORT blocked` },
+            { k: "GATE", ok: false, v: "counter-trend" },
+          ],
+          `${chosen.a.label} swept with HPR rejection, but macro trend is bullish (50 EMA > 200 EMA). Counter-trend SHORT blocked.`
+        );
+        chosen = null;
+      }
+
+      // Filter 5: Confluence score gate
+      if (chosen) {
+        const score = scoreCandidate(chosen, "SHORT");
+        st.lastConfluenceScore = score;
+        if (score < cfg.confluenceGate) {
+          setEval(
+            [
+              { k: "AOI CONTACT", ok: true, v: chosen.a.label },
+              { k: "REACTION", ok: true, v: clsLabel(cls) },
+              { k: "CONFLUENCE", ok: false, v: `${score}/100 < ${cfg.confluenceGate} gate` },
+              { k: "GATE", ok: false, v: "low confluence" },
+            ],
+            `Signal at ${chosen.a.label} scored ${score}/100 — below ${cfg.confluenceGate} institutional confluence gate. Discarded.`
+          );
+          chosen = null;
+        }
+      }
+
+      if (chosen) entered = tryEnter("SHORT", chosen.a, coolKey(chosen.a));
     }
 
     if (entered && chosen) {
@@ -918,6 +1049,24 @@ export function advance(st: EngineState, cfg: EngineConfig) {
   const tr = Math.max(bar.h - bar.l, Math.abs(bar.h - prevC), Math.abs(bar.l - prevC));
   st.atr = st.atr > 0 ? (st.atr * 13 + tr) / 14 : tr;
 
+  // 50-EMA & 200-EMA Trend Regime Filter
+  const k50 = 2 / (50 + 1);
+  const k200 = 2 / (200 + 1);
+  st.ema50 = idx === 0 ? bar.c : bar.c * k50 + st.ema50 * (1 - k50);
+  st.ema200 = idx === 0 ? bar.c : bar.c * k200 + st.ema200 * (1 - k200);
+
+  // Institutional Killzone Detection (UTC hours)
+  const barHour = hourOf(bar.t);
+  if (barHour >= 13 && barHour < 17) {
+    st.activeKillzone = "NEW_YORK";
+  } else if (barHour >= 12 && barHour < 13) {
+    st.activeKillzone = "OVERLAP"; // London/NY overlap
+  } else if (barHour >= 7 && barHour < 12) {
+    st.activeKillzone = "LONDON";
+  } else {
+    st.activeKillzone = "OFF_SESSION";
+  }
+
   const cls = classify(bar, st.atr, cfg);
   st.classes.push(cls);
 
@@ -997,6 +1146,10 @@ export function createEngine(seed: number, cfg: EngineConfig): EngineState {
     nextT: BASE_T,
     price: basePrice,
     nextId: 1,
+    ema50: basePrice,
+    ema200: basePrice,
+    lastConfluenceScore: 0,
+    activeKillzone: "OFF_SESSION",
   };
   ev(st, BASE_T, "SYS", "sys", `Trading Flow online · ${cfg.activeSymbol} (${cfg.timeframe})`);
   ev(st, BASE_T, "SYS", "aoi", `Simulator feed synchronized to market levels`);

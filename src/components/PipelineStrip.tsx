@@ -19,6 +19,19 @@ export default function PipelineStrip({ st }: { st: EngineState }) {
   const cs = clsStyle(le.cls);
   const identity = st.halted ? "DISCIPLINE LOCK" : "SIGNAL PIPELINE";
 
+  const kzColors: Record<string, { color: string; bg: string }> = {
+    LONDON: { color: "var(--long)", bg: "rgba(47,201,143,0.15)" },
+    NEW_YORK: { color: "#4fa6ff", bg: "rgba(79,166,255,0.15)" },
+    OVERLAP: { color: "var(--gold)", bg: "rgba(234,179,8,0.15)" },
+    OFF_SESSION: { color: "var(--dim)", bg: "rgba(81,100,127,0.12)" },
+  };
+  const kz = st.activeKillzone || "OFF_SESSION";
+  const kzStyle = kzColors[kz] || kzColors.OFF_SESSION;
+
+  const confScore = st.lastConfluenceScore || 0;
+  const confColor = confScore >= 75 ? "var(--long)" : confScore >= 50 ? "var(--gold)" : "var(--short)";
+  const confBg = confScore >= 75 ? "rgba(47,201,143,0.15)" : confScore >= 50 ? "rgba(234,179,8,0.15)" : "rgba(240,84,108,0.12)";
+
   return (
     <div className="glass-panel rise-in px-4 py-3 border border-white/10" style={{ animationDelay: "0.12s" }}>
       <div className="flex flex-wrap items-center gap-x-5 gap-y-2">
@@ -26,6 +39,14 @@ export default function PipelineStrip({ st }: { st: EngineState }) {
           <span className="panel-title font-bold text-white tracking-wider">{identity}</span>
           <span className="rounded px-2 py-0.5 font-mono text-[10px] font-extrabold tracking-wider border border-white/10" style={{ color: cs.color, background: cs.bg }}>
             {le.cls.replace("_", " ")}
+          </span>
+          {/* Killzone Status Badge */}
+          <span className="rounded px-2 py-0.5 font-mono text-[9px] font-bold tracking-wider border border-white/10" style={{ color: kzStyle.color, background: kzStyle.bg }}>
+            {kz === "OFF_SESSION" ? "OFF" : kz.replace("_", " ")}
+          </span>
+          {/* Confluence Score Badge */}
+          <span className="rounded px-2 py-0.5 font-mono text-[10px] font-extrabold tracking-wider border border-white/10" style={{ color: confColor, background: confBg }}>
+            CF {confScore}/100
           </span>
         </div>
 

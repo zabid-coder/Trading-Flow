@@ -464,6 +464,9 @@ export interface EngineConfig {
   slippagePoints: number; // e.g. 0.15 = 15 cents / 1.5 pips
   minSlAtr: number; // min SL distance multiple of ATR (default 0.2)
   maxSlAtr: number; // max SL distance multiple of ATR (default 4.0)
+  trendFilter: boolean; // 50/200 EMA trend regime filter
+  killzoneFilter: boolean; // London & NY killzone session filter
+  confluenceGate: number; // minimum confluence score out of 100 (default 75)
 }
 
 export interface SessionLevels {
@@ -518,6 +521,11 @@ export interface EngineState {
   nextT: number;
   price: number;
   nextId: number;
+  // Institutional filters state
+  ema50: number;
+  ema200: number;
+  lastConfluenceScore: number;
+  activeKillzone: "LONDON" | "NEW_YORK" | "OVERLAP" | "OFF_SESSION";
 }
 
 export const fmtP = (x: number, digits: number = 2) => x.toFixed(digits);

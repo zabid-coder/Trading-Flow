@@ -260,6 +260,18 @@ export default function ConsolePanel({ cfg, onCfg, onAoi, st, stats }: Props) {
                 on={cfg.windowEnabled}
                 onChange={() => onCfg({ windowEnabled: !cfg.windowEnabled })}
               />
+              <Toggle
+                label="KILLZONE SESSION FILTER"
+                desc="Only allows entries during London (07–11:30) & NY (13–17) killzones"
+                on={cfg.killzoneFilter ?? true}
+                onChange={() => onCfg({ killzoneFilter: !(cfg.killzoneFilter ?? true) })}
+              />
+              <Toggle
+                label="EMA TREND REGIME FILTER"
+                desc="Blocks counter-trend entries using 50/200 EMA alignment"
+                on={cfg.trendFilter ?? true}
+                onChange={() => onCfg({ trendFilter: !(cfg.trendFilter ?? true) })}
+              />
             </div>
           )}
         </div>
