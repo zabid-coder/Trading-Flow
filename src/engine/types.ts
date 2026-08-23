@@ -555,8 +555,12 @@ export interface EngineState {
 }
 
 export const fmtP = (x: number, digits: number = 2) => x.toFixed(digits);
-export const fmtUSD = (x: number) =>
-  (x < 0 ? "-$" : "$") + Math.abs(x).toLocaleString("en-US", { maximumFractionDigits: 0 });
+export const fmtUSD = (x: number, withSignOrDecimals?: boolean | number, decimals: number = 0) => {
+  const withSign = typeof withSignOrDecimals === "boolean" ? withSignOrDecimals : false;
+  const dec = typeof withSignOrDecimals === "number" ? withSignOrDecimals : decimals;
+  const sign = x > 0 && withSign ? "+" : x < 0 ? "-" : "";
+  return sign + "$" + Math.abs(x).toLocaleString("en-US", { minimumFractionDigits: dec, maximumFractionDigits: dec });
+};
 export const fmtClock = (t: number) => {
   const ms = ((t % 86400000) + 86400000) % 86400000;
   const h = Math.floor(ms / 3600000);

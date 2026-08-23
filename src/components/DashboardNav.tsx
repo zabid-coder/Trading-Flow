@@ -29,18 +29,18 @@ export default function DashboardNav({
       badgeColor: "bg-[var(--short)] text-white animate-bounce",
     },
     {
-      id: "strategyLab",
-      label: "MULTI-STRATEGY LAB",
+      id: "strategies",
+      label: "STRATEGIES & EA",
       icon: "🧠",
     },
     {
       id: "academy",
-      label: "VISUAL ACADEMY (LOGIC GUIDE)",
+      label: "VISUAL ACADEMY",
       icon: "📖",
     },
     {
-      id: "risk",
-      label: "TB DASHBOARD",
+      id: "analysis",
+      label: "ANALYSIS MATRIX",
       icon: "📈",
     },
   ];

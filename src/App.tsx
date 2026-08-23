@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { BrokerConfig, DashboardView, EngineConfig, EngineState, Timeframe } from "./engine/types";
+import type { BrokerConfig, DashboardView, EngineConfig, EngineState, Timeframe, Trade } from "./engine/types";
 import {
   DEFAULT_CFG,
   advance,
@@ -191,15 +191,14 @@ function TerminalContent() {
       stRef.current = createLiveEngine(sym, initialBars, cfgRef.current);
       setTick((t) => t + 1);
 
-      cleanupWs = connectLiveFeed(
-        sym,
-        (bar) => {
+      cleanupWs = connectLiveFeed(sym, tf, {
+        onBar: (bar, isClosed) => {
           if (!isCurrent) return;
           const s = stRef.current;
           if (!s) return;
 
           const prevTrades = s.trades.length;
-          feedLiveBar(s, cfgRef.current, bar);
+          feedLiveBar(s, cfgRef.current, bar, isClosed);
 
           if (s.trades.length > prevTrades) {
             const lastTrade = s.trades[s.trades.length - 1];
@@ -207,15 +206,15 @@ function TerminalContent() {
           }
           setTick((t) => t + 1);
         },
-        (status, latency) => {
+        onStatus: (status, latency) => {
           if (!isCurrent) return;
           const s = stRef.current;
           if (!s) return;
           s.liveStatus = status;
           s.liveLatency = latency;
           setTick((t) => t + 1);
-        }
-      );
+        },
+      });
     }
 
     startLive();
@@ -293,10 +292,12 @@ function TerminalContent() {
     if (!s || !s.open) return;
     const t = s.open;
     const lastBar = s.bars[s.bars.length - 1];
-    const exitPrice = lastBar ? lastBar.c : t.entry;
-    const pnl = t.side === "LONG" ? (exitPrice - t.entry) * t.oz : (t.entry - exitPrice) * t.oz;
+    const halfSpread = cfg.spread / 2;
+    const exitPrice = t.side === "LONG" ? (lastBar ? lastBar.c - halfSpread : t.entry) : (lastBar ? lastBar.c + halfSpread : t.entry);
+    const pnl = t.oz * (t.side === "LONG" ? exitPrice - t.entry : t.entry - exitPrice);
 
     t.exit = exitPrice;
+    t.exitIndex = s.bars.length - 1;
     t.exitTime = lastBar ? lastBar.t : Date.now();
     t.pnl = pnl;
     t.outcome = pnl >= 0 ? "TP" : "SL";
@@ -328,20 +329,34 @@ function TerminalContent() {
     setTick((t) => t + 1);
   };
 
-  const handlePartialClose = (ratio: number) => {
+  const handlePartialClose = (ratio: number = 0.5) => {
     const s = stRef.current;
     if (!s || !s.open) return;
-    const closedOz = s.open.oz * ratio;
-    partialClose(s, cfgRef.current, ratio);
+    const r = typeof ratio === "number" ? ratio : 0.5;
+    const closedOz = s.open.oz * r;
+    partialClose(s, cfgRef.current, r);
     addToast({
-      title: `💰 Took ${(ratio * 100).toFixed(0)}% Profit`,
+      title: `💰 Took ${(r * 100).toFixed(0)}% Profit`,
       description: `Scaled out ${closedOz.toFixed(2)} units. Stop moved to BE.`,
       type: "success",
     });
     setTick((t) => t + 1);
   };
 
-  const handleExecuteManual = (side: "LONG" | "SHORT", customOz?: number) => {
+  const handleExecuteManual = (
+    tradeOrSide:
+      | {
+          side: "LONG" | "SHORT";
+          entry: number;
+          sl: number;
+          tp: number;
+          oz: number;
+          risk: number;
+        }
+      | "LONG"
+      | "SHORT",
+    customOz?: number
+  ) => {
     const s = stRef.current;
     if (!s) return;
     const lastBar = s.bars[s.bars.length - 1];
@@ -356,10 +371,38 @@ function TerminalContent() {
       return;
     }
 
+    if (typeof tradeOrSide === "object") {
+      const t: Trade = {
+        id: s.nextId++,
+        side: tradeOrSide.side,
+        setup: "MANUAL EXECUTION",
+        family: "DISCRETIONARY",
+        identity: cfgRef.current.identity,
+        entryIndex: s.bars.length - 1,
+        entryTime: lastBar.t,
+        entry: tradeOrSide.entry,
+        sl: tradeOrSide.sl,
+        tp: tradeOrSide.tp,
+        oz: tradeOrSide.oz,
+        risk: tradeOrSide.risk,
+        open: true,
+      };
+      s.open = t;
+      saveTradeToJournal(t, cfgRef.current.activeSymbol, cfgRef.current.feedMode === "live" ? "LIVE" : "DEMO");
+      addToast({
+        title: `🎯 ${t.side} Executed`,
+        description: `Filled ${t.oz.toFixed(2)} units @ ${t.entry.toFixed(2)}`,
+        type: "success",
+      });
+      setTick((t) => t + 1);
+      return;
+    }
+
+    const side = tradeOrSide;
     const atr = s.atr || 2.0;
     const half = cfg.spread / 2;
     const entry = side === "LONG" ? lastBar.c + half : lastBar.c - half;
-    const slDist = atr * 1.2;
+    const slDist = 1.5 * atr;
     const sl = side === "LONG" ? entry - slDist : entry + slDist;
     const tp = side === "LONG" ? entry + slDist * cfg.rr : entry - slDist * cfg.rr;
     const oz = customOz || Math.max(0.1, cfg.riskUSD / (slDist * cfg.pointValue));

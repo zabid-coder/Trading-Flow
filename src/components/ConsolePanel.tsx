@@ -41,6 +41,30 @@ function Slider(props: {
   );
 }
 
+function NumberInput(props: {
+  label: string;
+  value: number;
+  min?: number;
+  max?: number;
+  step?: number;
+  onChange: (v: number) => void;
+}) {
+  return (
+    <label className="block flex-1">
+      <span className="block font-mono text-[8.5px] tracking-[0.14em] text-[var(--muted)] mb-1">{props.label}</span>
+      <input
+        type="number"
+        min={props.min}
+        max={props.max}
+        step={props.step || 1}
+        value={props.value}
+        onChange={(e) => props.onChange(parseFloat(e.target.value) || 0)}
+        className="w-full bg-[#050811] border border-[var(--line)] rounded px-2 py-1 font-mono text-[11px] text-white focus:outline-none focus:border-[var(--gold)]"
+      />
+    </label>
+  );
+}
+
 function Toggle({
   label,
   desc,

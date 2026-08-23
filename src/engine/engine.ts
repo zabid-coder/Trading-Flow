@@ -1365,6 +1365,13 @@ export function createLiveEngine(symbol: string, initialBars: Bar[], cfg: Engine
     nextT: Date.now(),
     price: lastClose,
     nextId: 1,
+    ema50: lastClose,
+    ema200: lastClose,
+    lastConfluenceScore: 0,
+    activeKillzone: "OFF_SESSION",
+    rbHigh: null,
+    rbLow: null,
+    rbState: "WAITING",
   };
 
   ev(st, Date.now(), "SYS", "sys", `⚡ LIVE MARKET FEED ATTACHED: ${symbol}`);
@@ -1509,6 +1516,8 @@ export interface Stats {
   losses: number;
   winRate: number;
   net: number;
+  netPnl: number;
+  totalTrades: number;
   grossWin: number;
   grossLoss: number;
   pf: number;
@@ -1545,6 +1554,8 @@ export function computeStats(st: EngineState, cfg: EngineConfig): Stats {
     losses,
     winRate: closed.length ? (wins / closed.length) * 100 : 0,
     net,
+    netPnl: net,
+    totalTrades: closed.length,
     grossWin,
     grossLoss,
     pf: grossLoss > 0 ? grossWin / grossLoss : grossWin > 0 ? 99 : 0,
