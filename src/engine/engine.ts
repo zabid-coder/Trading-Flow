@@ -1211,14 +1211,137 @@ function evaluate(st: EngineState, cfg: EngineConfig, bar: Bar, cls: CandleClass
           : `Liquidity trap sprung at ${chosen.a.label} — ${chosen.side === "LONG" ? "swept low, rejected, LONG" : "swept high, rejected, SHORT"} on the ${clsLabel(cls)}.`
       );
     } else {
+      // --- SECONDARY INSTITUTIONAL STRATEGIES: TREND PULLBACK & RSI EXHAUSTION ---
+      let secondaryEntered = false;
+
+      // 1. Trend EMA Pullback Strategy
+      const isBull = st.ema50 > st.ema200;
+      const isBear = st.ema50 < st.ema200;
+      const emaCd = st.cooldown["EMA_PULLBACK"];
+      const canEma = emaCd == null || idx - emaCd >= 8;
+
+      if (canEma && isBull && bar.l <= st.ema50 + 0.4 * atr && bar.c > st.ema50 && (cls === "LPR" || bar.c > bar.o)) {
+        const emaAoi: Aoi = {
+          kind: "OB_D",
+          role: "S",
+          y1: st.ema50,
+          y2: st.ema50,
+          ty: st.ema50,
+          from: idx,
+          label: "50-EMA TREND PULLBACK",
+          active: true,
+        };
+        secondaryEntered = tryEnter("LONG", emaAoi, "EMA_PULLBACK");
+        if (secondaryEntered) {
+          setEval(
+            [
+              { k: "STRATEGY", ok: true, v: "50-EMA Trend Pullback" },
+              { k: "TREND", ok: true, v: "BULLISH (EMA50 > EMA200)" },
+              { k: "REACTION", ok: true, v: clsLabel(cls) },
+              { k: "EXECUTION", ok: true, v: `LONG @ ${fmtP(bar.c)}` },
+            ],
+            `Institutional Trend Pullback confirmed! Bullish bounce off 50-EMA support with ${clsLabel(cls)} confirmation. Target: 1:${cfg.rr.toFixed(1)}R expansion.`
+          );
+          return;
+        }
+      } else if (canEma && isBear && bar.h >= st.ema50 - 0.4 * atr && bar.c < st.ema50 && (cls === "HPR" || bar.c < bar.o)) {
+        const emaAoi: Aoi = {
+          kind: "OB_S",
+          role: "R",
+          y1: st.ema50,
+          y2: st.ema50,
+          ty: st.ema50,
+          from: idx,
+          label: "50-EMA TREND PULLBACK",
+          active: true,
+        };
+        secondaryEntered = tryEnter("SHORT", emaAoi, "EMA_PULLBACK");
+        if (secondaryEntered) {
+          setEval(
+            [
+              { k: "STRATEGY", ok: true, v: "50-EMA Trend Pullback" },
+              { k: "TREND", ok: true, v: "BEARISH (EMA50 < EMA200)" },
+              { k: "REACTION", ok: true, v: clsLabel(cls) },
+              { k: "EXECUTION", ok: true, v: `SHORT @ ${fmtP(bar.c)}` },
+            ],
+            `Institutional Trend Pullback confirmed! Bearish rejection off 50-EMA resistance with ${clsLabel(cls)} confirmation. Target: 1:${cfg.rr.toFixed(1)}R breakdown.`
+          );
+          return;
+        }
+      }
+
+      // 2. RSI Exhaustion Mean-Reversion Strategy
+      if (!secondaryEntered && cfg.enabledStrategies.rsi_exhaustion && idx >= 15) {
+        let gains = 0, losses = 0;
+        const rsiPeriod = 14;
+        const startIdx = Math.max(1, idx - rsiPeriod);
+        for (let j = startIdx; j <= idx; j++) {
+          const diff = st.bars[j].c - st.bars[j - 1].c;
+          if (diff >= 0) gains += diff;
+          else losses += Math.abs(diff);
+        }
+        const rs = losses === 0 ? 100 : gains / losses;
+        const curRsi = 100 - 100 / (1 + rs);
+
+        const rsiCd = st.cooldown["RSI_EXHAUSTION"];
+        const canRsi = rsiCd == null || idx - rsiCd >= 8;
+        if (canRsi && curRsi <= 32 && (cls === "LPR" || bar.c > bar.o)) {
+          const rsiAoi: Aoi = {
+            kind: "TB",
+            role: "S",
+            y1: bar.l,
+            y2: bar.l,
+            ty: bar.l,
+            from: idx,
+            label: "RSI OVERSOLD BOUNCE",
+            active: true,
+          };
+          secondaryEntered = tryEnter("LONG", rsiAoi, "RSI_EXHAUSTION");
+          if (secondaryEntered) {
+            setEval(
+              [
+                { k: "STRATEGY", ok: true, v: `RSI Oversold (${curRsi.toFixed(0)})` },
+                { k: "REACTION", ok: true, v: clsLabel(cls) },
+                { k: "EXECUTION", ok: true, v: `LONG @ ${fmtP(bar.c)}` },
+              ],
+              `RSI Exhaustion trigger! Oversold momentum (${curRsi.toFixed(0)}) flashed reversal signal. LONG mean-reversion initiated.`
+            );
+            return;
+          }
+        } else if (canRsi && curRsi >= 68 && (cls === "HPR" || bar.c < bar.o)) {
+          const rsiAoi: Aoi = {
+            kind: "TT",
+            role: "R",
+            y1: bar.h,
+            y2: bar.h,
+            ty: bar.h,
+            from: idx,
+            label: "RSI OVERBOUGHT FADE",
+            active: true,
+          };
+          secondaryEntered = tryEnter("SHORT", rsiAoi, "RSI_EXHAUSTION");
+          if (secondaryEntered) {
+            setEval(
+              [
+                { k: "STRATEGY", ok: true, v: `RSI Overbought (${curRsi.toFixed(0)})` },
+                { k: "REACTION", ok: true, v: clsLabel(cls) },
+                { k: "EXECUTION", ok: true, v: `SHORT @ ${fmtP(bar.c)}` },
+              ],
+              `RSI Exhaustion trigger! Overbought momentum (${curRsi.toFixed(0)}) flashed rejection signal. SHORT mean-reversion initiated.`
+            );
+            return;
+          }
+        }
+      }
+
       const contactTxt = swept.length
         ? swept.map((s) => s.a.label).join(" + ") + " swept"
         : nearAoi
           ? `near ${nearAoi.label} · no sweep`
-          : "none — mid-range";
+          : "scanning liquidity pools";
       const reactionOk = swept.length ? cls === "LPR" || cls === "HPR" : null;
       const gateTxt = !swept.length
-        ? "stand down — no sweep"
+        ? "scanning for setup"
         : cls === "LPR" || cls === "HPR"
           ? "level on cooldown"
           : `needs ${swept.some((s) => s.side === "LONG") ? "LPR" : "HPR"}, got ${clsLabel(cls)}`;
@@ -1232,7 +1355,7 @@ function evaluate(st: EngineState, cfg: EngineConfig, bar: Bar, cls: CandleClass
         !swept.length
           ? nearAoi
             ? `Drifting near ${nearAoi.label}. No sweep, no rejection — the engine waits and leaves this money on the table.`
-            : "Price is mid-range, away from every AOI. No level, no trade — patience is a position."
+            : "Price is mid-range. Auto-pilot scanning for Asian fakeouts, EMA pullbacks, and liquidity sweeps."
           : `Swept ${swept.map((s) => s.a.label).join(", ")} but the close printed a ${clsLabel(cls)}. Trap not confirmed — no entry.`
       );
     }

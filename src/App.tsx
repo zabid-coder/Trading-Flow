@@ -124,6 +124,41 @@ function TerminalContent() {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [running]);
 
+  // Auto-Pilot trade dispatcher
+  const handleAutoDispatch = async (trade: Trade) => {
+    playOrderFilledSound();
+    addToast({
+      title: "⚡ Auto-Pilot Executed Trade",
+      description: `${trade.side} ${trade.oz.toFixed(2)} oz @ $${trade.entry.toFixed(2)} · ${trade.setup}`,
+      type: "success",
+    });
+
+    if (brokerCfgRef.current.mt5Enabled || brokerCfgRef.current.telegramEnabled || brokerCfgRef.current.webhookEnabled) {
+      try {
+        const res = await dispatchTradeOrder(
+          trade,
+          cfgRef.current.activeSymbol,
+          brokerCfgRef.current
+        );
+        if (res.success) {
+          addToast({
+            title: "MT5 Broker Dispatched",
+            description: res.message,
+            type: "success",
+          });
+        } else {
+          addToast({
+            title: "MT5 Dispatch Notice",
+            description: res.message,
+            type: "info",
+          });
+        }
+      } catch (err: unknown) {
+        console.error("Auto broker dispatch error:", err);
+      }
+    }
+  };
+
   // Simulation tick loop
   useEffect(() => {
     if (!running || cfg.feedMode === "live") return;
@@ -134,8 +169,14 @@ function TerminalContent() {
 
       const prevTradesCount = st.trades.length;
       const prevPendingCount = st.queue.filter((q) => q.status === "PENDING").length;
+      const wasOpen = st.open;
 
       for (let k = 0; k < perTick; k++) advance(st, cfgRef.current);
+
+      const isNowOpen = st.open;
+      if (!wasOpen && isNowOpen && !cfgRef.current.actionCenter) {
+        handleAutoDispatch(isNowOpen);
+      }
 
       // Sound & Toast Cues
       const curPending = st.queue.filter((q) => q.status === "PENDING");
@@ -200,7 +241,14 @@ function TerminalContent() {
           if (!s) return;
 
           const prevTrades = s.trades.length;
+          const wasOpen = s.open;
+
           feedLiveBar(s, cfgRef.current, bar, isClosed);
+
+          const isNowOpen = s.open;
+          if (!wasOpen && isNowOpen && !cfgRef.current.actionCenter) {
+            handleAutoDispatch(isNowOpen);
+          }
 
           if (s.trades.length > prevTrades) {
             const lastTrade = s.trades[s.trades.length - 1];
