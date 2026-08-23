@@ -1,6 +1,7 @@
 import React, { useState, useMemo } from 'react';
 import { Card } from './ui/Card';
 import CandleChart from './CandleChart';
+import TrappedTradersRadar from './TrappedTradersRadar';
 import type { EngineConfig, EngineState } from '../engine/types';
 import { fmtP } from '../engine/types';
 import { Sparkles, Layers, Eye, EyeOff, ShieldCheck, Check, Clock, TrendingUp } from 'lucide-react';
@@ -121,7 +122,10 @@ export const MarketVision: React.FC<Props> = ({ st, cfg }) => {
         </div>
       </Card>
 
-      {/* 2. STRATEGY LOGIC CONFLUENCE VISUALIZER */}
+      {/* 2. CHRIS CREAMER 4-LAYER TRAPPED TRADERS RADAR */}
+      <TrappedTradersRadar st={st} cfg={cfg} />
+
+      {/* 3. STRATEGY LOGIC CONFLUENCE VISUALIZER */}
       <Card title="Strategy Logic Visualizer" icon={<ShieldCheck size={16} className="text-emerald-400" />} status="active">
         <div className="space-y-3">
           {/* Confluence Progress Bar */}
