@@ -13,7 +13,7 @@ import {
 } from "./engine/engine";
 import { connectLiveFeed, fetchHistoricalBars, getSymbolMeta } from "./engine/liveFeed";
 import { dispatchTradeOrder, loadBrokerConfig, saveBrokerConfig } from "./engine/brokerDispatch";
-import { initAutoprune, saveJournalTrades } from "./engine/storage";
+import { initAutoprune, saveJournalTrades, saveTradeToJournal } from "./engine/storage";
 import {
   playBeSound,
   playOrderFilledSound,
@@ -146,8 +146,8 @@ function TerminalContent() {
       }
 
       if (st.trades.length > prevTradesCount) {
-        saveJournalTrades(st.trades);
         const lastTrade = st.trades[st.trades.length - 1];
+        saveTradeToJournal(lastTrade, cfgRef.current.activeSymbol, cfgRef.current.feedMode === "live" ? "LIVE" : "DEMO");
         if (lastTrade.outcome === "TP") {
           playTpSound();
           addToast({
@@ -201,7 +201,8 @@ function TerminalContent() {
           feedLiveBar(s, cfgRef.current, bar);
 
           if (s.trades.length > prevTrades) {
-            saveJournalTrades(s.trades);
+            const lastTrade = s.trades[s.trades.length - 1];
+            saveTradeToJournal(lastTrade, cfgRef.current.activeSymbol, "LIVE");
           }
           setTick((t) => t + 1);
         },
@@ -290,7 +291,7 @@ function TerminalContent() {
     s.trades.push(t);
     s.open = null;
 
-    saveJournalTrades(s.trades);
+    saveTradeToJournal(t, cfg.activeSymbol, cfg.feedMode === "live" ? "LIVE" : "DEMO");
     addToast({
       title: "Position Liquidated",
       description: `Closed ${t.side} at market. PnL: $${pnl.toFixed(2)}`,

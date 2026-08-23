@@ -1,7 +1,7 @@
 import React, { useMemo, useState } from "react";
-import type { EngineConfig, EngineState, Trade } from "../engine/types";
+import type { EngineConfig, EngineState } from "../engine/types";
 import { fmtP, fmtUSD } from "../engine/types";
-import { exportJournalCsv } from "../engine/storage";
+import { exportJournalCsv, loadAllJournalTrades, saveTradeNote, clearAllJournalHistory, RecordedTrade } from "../engine/storage";
 
 interface Props {
   st: EngineState;
@@ -12,63 +12,92 @@ export default function TradesLedgerView({ st, cfg }: Props) {
   const [symbolFilter, setSymbolFilter] = useState("ALL");
   const [strategyFilter, setStrategyFilter] = useState("ALL");
   const [directionFilter, setDirectionFilter] = useState("ALL");
+  const [modeFilter, setModeFilter] = useState("ALL");
   const [weekdayFilter, setWeekdayFilter] = useState("ALL");
   const [searchTerm, setSearchTerm] = useState("");
   const [fromDate, setFromDate] = useState("");
   const [toDate, setToDate] = useState("");
   const [editingTradeId, setEditingTradeId] = useState<number | null>(null);
   const [noteInput, setNoteInput] = useState("");
+  const [refreshKey, setRefreshKey] = useState(0);
 
-  const allClosedTrades = useMemo(
-    () => st.trades.filter((t) => !t.open && t.pnl !== undefined),
-    [st.trades]
-  );
+  // Merge in-memory trades with persistent stored history
+  const allRecordedTrades = useMemo(() => {
+    const saved = loadAllJournalTrades();
+    const map = new Map<string, RecordedTrade>();
+
+    // Add saved first
+    saved.forEach((t) => {
+      map.set(`${t.id}_${t.symbol || cfg.activeSymbol}`, t);
+    });
+
+    // Add/update active session trades
+    st.trades.forEach((t) => {
+      if (!t.open && t.pnl !== undefined) {
+        const key = `${t.id}_${cfg.activeSymbol}`;
+        map.set(key, {
+          ...t,
+          symbol: cfg.activeSymbol,
+          mode: cfg.feedMode === "live" ? "LIVE" : "DEMO",
+          timestamp: t.exitTime || t.entryTime || Date.now(),
+        });
+      }
+    });
+
+    return Array.from(map.values()).sort(
+      (a, b) => (b.exitTime || b.entryTime || b.timestamp || 0) - (a.exitTime || a.entryTime || a.timestamp || 0)
+    );
+  }, [st.trades, cfg.activeSymbol, cfg.feedMode, refreshKey]);
 
   // Extract unique strategies for filter dropdown
   const uniqueStrategies = useMemo(() => {
     const set = new Set<string>();
-    allClosedTrades.forEach((t) => set.add(t.setup));
+    allRecordedTrades.forEach((t) => set.add(t.setup));
     return Array.from(set);
-  }, [allClosedTrades]);
+  }, [allRecordedTrades]);
 
   // Filtered trades computation
   const filteredTrades = useMemo(() => {
-    return allClosedTrades.filter((t) => {
-      if (symbolFilter !== "ALL" && (cfg.activeSymbol !== symbolFilter)) return false;
+    return allRecordedTrades.filter((t) => {
+      if (symbolFilter !== "ALL" && (t.symbol || cfg.activeSymbol) !== symbolFilter) return false;
       if (strategyFilter !== "ALL" && t.setup !== strategyFilter) return false;
       if (directionFilter !== "ALL" && t.side !== directionFilter) return false;
+      if (modeFilter !== "ALL" && (t.mode || "DEMO") !== modeFilter) return false;
+
+      const tradeTime = t.entryTime || t.timestamp || Date.now();
 
       if (weekdayFilter !== "ALL") {
         const dayMap = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-        const tradeDay = dayMap[new Date(t.entryTime).getDay()];
+        const tradeDay = dayMap[new Date(tradeTime).getDay()];
         if (tradeDay !== weekdayFilter) return false;
       }
 
       if (fromDate) {
         const fromTs = new Date(fromDate).getTime();
-        if (t.entryTime < fromTs) return false;
+        if (tradeTime < fromTs) return false;
       }
 
       if (toDate) {
         const toTs = new Date(toDate).getTime() + 86400000;
-        if (t.entryTime > toTs) return false;
+        if (tradeTime > toTs) return false;
       }
 
       if (searchTerm.trim()) {
         const term = searchTerm.toLowerCase();
         const matchesTicket = String(t.id).includes(term);
-        const matchesSetup = t.setup.toLowerCase().includes(term);
-        const matchesNotes = t.notes?.toLowerCase().includes(term);
+        const matchesSetup = (t.setup || "").toLowerCase().includes(term);
+        const matchesNotes = (t.notes || "").toLowerCase().includes(term);
         if (!matchesTicket && !matchesSetup && !matchesNotes) return false;
       }
 
       return true;
     });
   }, [
-    allClosedTrades,
+    allRecordedTrades,
     symbolFilter,
     strategyFilter,
     directionFilter,
+    modeFilter,
     weekdayFilter,
     fromDate,
     toDate,
@@ -80,6 +109,7 @@ export default function TradesLedgerView({ st, cfg }: Props) {
     setSymbolFilter("ALL");
     setStrategyFilter("ALL");
     setDirectionFilter("ALL");
+    setModeFilter("ALL");
     setWeekdayFilter("ALL");
     setSearchTerm("");
     setFromDate("");
@@ -87,12 +117,20 @@ export default function TradesLedgerView({ st, cfg }: Props) {
   };
 
   const handleSaveNote = (id: number) => {
-    const trade = st.trades.find((t) => t.id === id);
-    if (trade) {
-      trade.notes = noteInput;
-    }
+    saveTradeNote(id, noteInput);
+    const inMem = st.trades.find((t) => t.id === id);
+    if (inMem) inMem.notes = noteInput;
     setEditingTradeId(null);
     setNoteInput("");
+    setRefreshKey((k) => k + 1);
+  };
+
+  const handleClearHistory = () => {
+    if (window.confirm("Are you sure you want to clear all permanently recorded trade history?")) {
+      clearAllJournalHistory();
+      st.trades = [];
+      setRefreshKey((k) => k + 1);
+    }
   };
 
   return (
@@ -102,31 +140,53 @@ export default function TradesLedgerView({ st, cfg }: Props) {
         <div>
           <div className="flex items-center gap-2">
             <h1 className="text-2xl font-black text-white tracking-tight font-sans">
-              Trades Ledger
+              Trades Ledger & Execution Logs
             </h1>
-            <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-blue-500/20 text-blue-400 border border-blue-500/30 font-mono">
-              AUDITED LEDGER
+            <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 font-mono">
+              AUTO-PERSIST ACTIVE
             </span>
           </div>
           <p className="text-xs text-gray-400 font-mono mt-1">
-            Trading Flow {cfg.activeSymbol} · {filteredTrades.length} of {allClosedTrades.length} Trades Listed
+            Permanently logged with exact Date & Time · {filteredTrades.length} of {allRecordedTrades.length} Trades Total
           </p>
         </div>
 
         <div className="flex items-center gap-2">
           <button
-            onClick={() => exportJournalCsv(filteredTrades)}
+            onClick={() => exportJournalCsv(filteredTrades, cfg.activeSymbol)}
             className="px-3.5 py-1.5 rounded-lg bg-[#15233c] hover:bg-[#1d3052] border border-blue-500/40 text-blue-300 font-bold text-xs shadow-sm transition-all flex items-center gap-1.5 font-mono"
           >
             <span>📥</span>
             <span>Export CSV</span>
           </button>
+
+          <button
+            onClick={handleClearHistory}
+            className="px-3 py-1.5 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/30 text-rose-300 font-semibold text-xs transition-all font-mono"
+            title="Reset stored trade logs"
+          >
+            Clear Stored Logs
+          </button>
         </div>
       </div>
 
-      {/* Filter Toolbar (Replicating Image 3 Filter Strip) */}
+      {/* Filter Toolbar */}
       <div className="bg-[#0f172a] rounded-xl border border-[#1e293b] p-3 shadow-sm space-y-3 font-mono text-[11px]">
-        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-7 gap-2.5 items-end">
+        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-8 gap-2.5 items-end">
+          {/* Mode */}
+          <div>
+            <label className="text-[9px] font-bold text-gray-400 block mb-1 uppercase">MODE</label>
+            <select
+              value={modeFilter}
+              onChange={(e) => setModeFilter(e.target.value)}
+              className="w-full bg-[#162033] border border-[#24334f] rounded-lg px-2 py-1.5 text-white focus:outline-none focus:border-blue-500 text-[11px]"
+            >
+              <option value="ALL">All Modes</option>
+              <option value="LIVE">LIVE REAL</option>
+              <option value="DEMO">DEMO / SIM</option>
+            </select>
+          </div>
+
           {/* From Date */}
           <div>
             <label className="text-[9px] font-bold text-gray-400 block mb-1 uppercase">FROM</label>
@@ -215,7 +275,7 @@ export default function TradesLedgerView({ st, cfg }: Props) {
           </div>
 
           {/* Clear Filters Button */}
-          <div className="flex gap-2">
+          <div>
             <button
               onClick={clearFilters}
               className="w-full py-1.5 px-3 rounded-lg bg-[#22334f] hover:bg-[#2b4164] text-gray-300 font-bold transition-all text-[11px]"
@@ -230,7 +290,7 @@ export default function TradesLedgerView({ st, cfg }: Props) {
           <span className="text-gray-400 text-xs">🔍</span>
           <input
             type="text"
-            placeholder="Search by ticket #, setup name, or notes..."
+            placeholder="Search by ticket #, setup name, date, or notes..."
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
             className="flex-1 bg-[#162033] border border-[#24334f] rounded-lg px-3 py-1.5 text-white placeholder-gray-500 focus:outline-none focus:border-blue-500 text-xs"
@@ -242,10 +302,10 @@ export default function TradesLedgerView({ st, cfg }: Props) {
       <div className="bg-[#0f172a] rounded-xl border border-[#1e293b] overflow-hidden shadow-sm">
         <div className="px-4 py-3 bg-[#131d33] border-b border-[#1e293b] flex items-center justify-between font-mono text-xs">
           <span className="font-bold text-white">
-            1 – {filteredTrades.length} of {allClosedTrades.length} Trades Total
+            1 – {filteredTrades.length} of {allRecordedTrades.length} Saved Records
           </span>
           <span className="text-gray-400 text-[11px]">
-            Execution Feed: MetaTrader 5 / Fast Bridge Synced
+            Permanent LocalStorage DB Synced · ISO Date/Time Logged
           </span>
         </div>
 
@@ -254,6 +314,7 @@ export default function TradesLedgerView({ st, cfg }: Props) {
             <thead className="bg-[#090e18] text-gray-400 uppercase text-[9px] tracking-wider border-b border-[#1e293b]">
               <tr>
                 <th className="py-2.5 px-3">TICKET #</th>
+                <th className="py-2.5 px-3">MODE</th>
                 <th className="py-2.5 px-3">SYMBOL</th>
                 <th className="py-2.5 px-3">DIR</th>
                 <th className="py-2.5 px-3 text-right">VOLUME</th>
@@ -271,24 +332,35 @@ export default function TradesLedgerView({ st, cfg }: Props) {
             <tbody className="divide-y divide-[#182338]">
               {filteredTrades.length === 0 ? (
                 <tr>
-                  <td colSpan={13} className="text-center py-12 text-gray-500 font-sans">
-                    No trades match the current filter selection.
+                  <td colSpan={14} className="text-center py-12 text-gray-500 font-sans">
+                    No recorded trades match the current filter selection.
                   </td>
                 </tr>
               ) : (
                 filteredTrades.map((t) => {
                   const isWin = (t.pnl ?? 0) >= 0;
-                  const openDate = new Date(t.entryTime);
+                  const openDate = new Date(t.entryTime || Date.now());
                   const closeDate = t.exitTime ? new Date(t.exitTime) : null;
                   const ticket = `4070${String(t.id).padStart(6, "0")}`;
 
                   return (
                     <tr
-                      key={t.id}
+                      key={`${t.id}_${t.symbol || cfg.activeSymbol}_${t.entryTime}`}
                       className="hover:bg-[#152035] transition-colors group text-gray-300"
                     >
                       <td className="py-2.5 px-3 font-semibold text-blue-400">{ticket}</td>
-                      <td className="py-2.5 px-3 font-bold text-white">{cfg.activeSymbol}</td>
+                      <td className="py-2.5 px-3">
+                        <span
+                          className={`px-1.5 py-0.5 rounded text-[8.5px] font-bold ${
+                            t.mode === "LIVE"
+                              ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/40"
+                              : "bg-blue-500/20 text-blue-400 border border-blue-500/40"
+                          }`}
+                        >
+                          {t.mode || "DEMO"}
+                        </span>
+                      </td>
+                      <td className="py-2.5 px-3 font-bold text-white">{t.symbol || cfg.activeSymbol}</td>
                       <td className="py-2.5 px-3">
                         <span
                           className={`px-2 py-0.5 rounded text-[9.5px] font-black tracking-wider ${
@@ -304,11 +376,11 @@ export default function TradesLedgerView({ st, cfg }: Props) {
                         {t.oz.toFixed(2)}
                       </td>
                       <td className="py-2.5 px-3 text-gray-400 text-[10px]">
-                        {openDate.toISOString().slice(5, 16).replace("T", " ")}
+                        {openDate.toISOString().slice(0, 19).replace("T", " ")}
                       </td>
                       <td className="py-2.5 px-3 text-gray-400 text-[10px]">
                         {closeDate
-                          ? closeDate.toISOString().slice(5, 16).replace("T", " ")
+                          ? closeDate.toISOString().slice(0, 19).replace("T", " ")
                           : "—"}
                       </td>
                       <td className="py-2.5 px-3 text-right font-medium">{fmtP(t.entry)}</td>
