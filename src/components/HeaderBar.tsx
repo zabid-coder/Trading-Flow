@@ -1,6 +1,19 @@
+import React from "react";
 import type { EngineConfig, EngineState, Timeframe } from "../engine/types";
 import { fmtP, fmtUSD, SUPPORTED_SYMBOLS, TIMEFRAMES } from "../engine/types";
 import { activeSessions } from "../engine/market";
+import {
+  Volume2,
+  VolumeX,
+  Settings,
+  HelpCircle,
+  Play,
+  Pause,
+  BarChart2,
+  Zap,
+  Radio,
+  Sparkles,
+} from "lucide-react";
 
 export const SPEEDS = [
   { label: "1×", ms: 1150 },
@@ -48,95 +61,66 @@ export default function HeaderBar({
   onToggleAutoMode,
   tick,
 }: Props) {
-  const last = st.bars[st.bars.length - 1] || { t: Date.now(), o: 2750, h: 2750, l: 2750, c: 2750, v: 0, day: 0 };
+  const last = st.bars[st.bars.length - 1] || {
+    t: Date.now(),
+    o: 2750,
+    h: 2750,
+    l: 2750,
+    c: 2750,
+    v: 0,
+    day: 0,
+  };
   const prev = st.bars[st.bars.length - 2] ?? last;
-  const dir = last.c >= prev.c ? "up" : "down";
   const chg = last.c - st.dayOpen;
   const chgPct = st.dayOpen ? (chg / st.dayOpen) * 100 : 0;
   const hour = Math.floor((((last.t % 86400000) + 86400000) % 86400000) / 3600000);
   const ses = activeSessions(hour);
 
-  const activeMeta = SUPPORTED_SYMBOLS.find((s) => s.symbol === cfg.activeSymbol) || SUPPORTED_SYMBOLS[0];
+  const activeMeta =
+    SUPPORTED_SYMBOLS.find((s) => s.symbol === cfg.activeSymbol) || SUPPORTED_SYMBOLS[0];
   const isLive = cfg.feedMode === "live";
 
   const halfSpread = cfg.spread / 2;
-  const sellPrice = last.c - halfSpread;
   const buyPrice = last.c + halfSpread;
-  const spreadPoints = (cfg.spread * (activeMeta.digits === 5 ? 10000 : 100)).toFixed(1);
+  const sellPrice = last.c - halfSpread;
+  const spreadPoints = (cfg.spread * (activeMeta.symbol.startsWith("XAU") ? 10 : 10000)).toFixed(
+    1
+  );
 
-  // Live account metrics
-  const floatingPnl = st.open
-    ? (st.open.side === "LONG"
-        ? st.open.oz * (last.c - halfSpread - st.open.entry)
-        : st.open.oz * (st.open.entry - (last.c + halfSpread)))
-    : 0;
-  const currentEquity = st.balance + floatingPnl;
-  const closedTrades = st.trades.filter((t) => !t.open);
-  const winCount = closedTrades.filter((t) => t.outcome === "TP" || (t.pnl ?? 0) > 0).length;
-  const winRate = closedTrades.length > 0 ? (winCount / closedTrades.length) * 100 : 0;
-  const totalRealizedPnl = closedTrades.reduce((acc, t) => acc + (t.pnl ?? 0), 0);
+  const isAutoMode = !cfg.actionCenter;
 
   return (
-    <header
-      className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 border-b px-3 py-2 lg:px-4 font-mono select-none"
-      style={{
-        borderColor: "rgba(255, 255, 255, 0.08)",
-        background: "rgba(10, 15, 24, 0.88)",
-        backdropFilter: "blur(16px)",
-      }}
-    >
-      {/* 1. Left: Live Account Stats Pill & Instrument Selector */}
-      <div className="flex items-center gap-2.5 flex-wrap">
-        {/* Live Balance & Equity Glass Badge */}
-        <div className="flex items-center gap-3 bg-[#0d1424]/90 border border-white/10 rounded-lg px-3 py-1.5 text-[11px] shadow-sm">
-          <div>
-            <span className="text-[8.5px] text-[var(--dim)] font-semibold tracking-wider block font-mono">EQUITY</span>
-            <span className="font-bold text-white font-mono">${currentEquity.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
-          </div>
-          <div className="h-6 w-px bg-white/10" />
-          <div>
-            <span className="text-[8.5px] text-[var(--dim)] font-semibold tracking-wider block font-mono">FLOATING P&L</span>
-            <span className={`font-bold font-mono ${floatingPnl >= 0 ? "text-[var(--long)]" : "text-[var(--short)]"}`}>
-              {floatingPnl >= 0 ? "+" : ""}${floatingPnl.toFixed(2)}
-            </span>
-          </div>
-          <div className="h-6 w-px bg-white/10 hidden sm:block" />
-          <div className="hidden sm:block">
-            <span className="text-[8.5px] text-[var(--dim)] font-semibold tracking-wider block font-mono">WIN RATE</span>
-            <span className="font-bold text-[var(--gold-hi)] font-mono">{winRate.toFixed(0)}%</span>
-          </div>
-        </div>
-
-        {/* Instrument Selector Pill */}
-        <div className="flex items-center gap-2 bg-[#090d16] border border-white/10 rounded-lg px-2 py-1">
-          <span className="flex h-4 w-4 items-center justify-center rounded-full bg-[var(--gold)] text-black text-[9px] font-black">
-            ✦
-          </span>
+    <header className="flex flex-wrap items-center justify-between gap-3 border-b border-white/5 px-4 py-2 bg-[#080808]/95 backdrop-blur-xl select-none font-sans z-20">
+      {/* 1. Left Section: Asset Selector, Timeframe Pills & Live Stats */}
+      <div className="flex flex-wrap items-center gap-3">
+        {/* Asset Selector */}
+        <div className="flex items-center gap-2 bg-[#121212] border border-white/10 rounded-lg px-2.5 py-1.5 shadow-inner">
+          <span className="w-2 h-2 rounded-full bg-[#f59e0b] animate-ping" />
           <select
             value={cfg.activeSymbol}
             onChange={(e) => onSelectSymbol(e.target.value)}
-            className="bg-transparent text-white font-bold text-[12px] outline-none cursor-pointer pr-1"
+            className="bg-transparent text-white font-bold text-xs outline-none cursor-pointer pr-1 font-mono"
           >
             {SUPPORTED_SYMBOLS.map((s) => (
-              <option key={s.symbol} value={s.symbol} className="bg-[#0e1522] text-white">
-                {s.label} · {s.source}
+              <option key={s.symbol} value={s.symbol} className="bg-[#121212] text-white">
+                {s.label} ({s.symbol})
               </option>
             ))}
           </select>
         </div>
 
-        {/* Timeframe Selector Pills (1m, 5m, 15m, 30m, 1h, 4h) */}
-        <div className="flex items-center bg-[#090d16] border border-white/10 rounded-lg p-0.5">
+        {/* Timeframe Selector Pills */}
+        <div className="flex items-center bg-[#121212] border border-white/10 rounded-lg p-0.5 font-mono">
           {TIMEFRAMES.map((tf) => {
             const isActive = cfg.timeframe === tf.label;
             return (
               <button
                 key={tf.label}
                 onClick={() => onSelectTimeframe(tf.label)}
-                className={`px-2 py-0.5 rounded text-[11px] font-bold transition-all ${
+                className={`px-2.5 py-1 rounded-md text-[11px] font-bold transition-all cursor-pointer ${
                   isActive
-                    ? "bg-[#253553] text-white shadow-sm border border-white/10"
-                    : "text-[var(--dim)] hover:text-white hover:bg-[#162135]"
+                    ? "bg-[#222] text-white shadow-sm border border-white/10 font-extrabold"
+                    : "text-slate-500 hover:text-white"
                 }`}
               >
                 {tf.label}
@@ -144,98 +128,104 @@ export default function HeaderBar({
             );
           })}
         </div>
+
+        {/* Live Price & Spread Telemetry */}
+        <div className="hidden xl:flex items-center gap-2 px-3 py-1 rounded-lg bg-[#101010] border border-white/5 font-mono text-xs">
+          <span className="text-slate-400">SPREAD:</span>
+          <span className="font-bold text-amber-300">{spreadPoints} pts</span>
+          <span className="text-slate-600">|</span>
+          <span
+            className={`font-extrabold ${
+              chg >= 0 ? "text-[#10b981]" : "text-[#ef4444]"
+            }`}
+          >
+            {chg >= 0 ? "+" : ""}
+            {chgPct.toFixed(2)}%
+          </span>
+        </div>
       </div>
 
-      {/* 2. Center: Quick Spread & Direction Box */}
+      {/* 2. Center: Instant Buy / Sell Action Boxes */}
       <div className="flex items-center gap-2">
-        <div className="flex items-center bg-[#080d16] border border-white/10 rounded-lg p-1 gap-2 shadow-inner">
+        <div className="flex items-center bg-[#101010] border border-white/10 rounded-xl p-1 gap-2 shadow-inner">
           {/* Sell Box Button */}
           <button
             onClick={() => onOpenQuickOrder?.("SHORT")}
-            className="flex flex-col items-center justify-center px-3 py-1 rounded bg-[#f0546c]/10 border border-[#f0546c]/40 text-center min-w-[85px] hover:bg-[#f0546c]/25 hover:scale-[1.02] active:scale-[0.98] transition-all cursor-pointer"
+            className="flex flex-col items-center justify-center px-3 py-1 rounded-lg bg-[#ef4444]/10 border border-[#ef4444]/40 text-center min-w-[85px] hover:bg-[#ef4444]/25 active:scale-[0.98] transition-all cursor-pointer"
             title="Click to open Universal Order Desk (SELL)"
           >
-            <span className="text-[13px] font-bold text-[#f0546c] leading-tight">
+            <span className="text-xs font-bold text-[#ef4444] leading-tight font-mono">
               {fmtP(sellPrice, activeMeta.digits)}
             </span>
-            <span className="text-[8px] font-black text-[#f0546c] tracking-wider">▼ SELL / SHORT</span>
+            <span className="text-[8px] font-black text-[#ef4444] tracking-wider">▼ SELL / SHORT</span>
           </button>
 
-          {/* Spread indicator */}
-          <div className="flex flex-col items-center justify-center px-1 text-center">
-            <span className="text-[10px] font-bold text-[var(--muted)]">{spreadPoints}</span>
-            <span className="text-[7.5px] text-[var(--dim)] tracking-tighter">SPREAD</span>
+          {/* Quick Price Indicator */}
+          <div className="flex flex-col items-center justify-center px-1 text-center font-mono">
+            <span className="text-xs font-black text-white">{fmtP(last.c, activeMeta.digits)}</span>
+            <span className="text-[7.5px] text-slate-500 tracking-tighter">MID PRICE</span>
           </div>
 
           {/* Buy Box Button */}
           <button
             onClick={() => onOpenQuickOrder?.("LONG")}
-            className="flex flex-col items-center justify-center px-3 py-1 rounded bg-[#2fc98f]/10 border border-[#2fc98f]/40 text-center min-w-[85px] hover:bg-[#2fc98f]/25 hover:scale-[1.02] active:scale-[0.98] transition-all cursor-pointer"
+            className="flex flex-col items-center justify-center px-3 py-1 rounded-lg bg-[#10b981]/10 border border-[#10b981]/40 text-center min-w-[85px] hover:bg-[#10b981]/25 active:scale-[0.98] transition-all cursor-pointer"
             title="Click to open Universal Order Desk (BUY)"
           >
-            <span className="text-[13px] font-bold text-[#2fc98f] leading-tight">
+            <span className="text-xs font-bold text-[#10b981] leading-tight font-mono">
               {fmtP(buyPrice, activeMeta.digits)}
             </span>
-            <span className="text-[8px] font-black text-[#2fc98f] tracking-wider">▲ BUY / LONG</span>
+            <span className="text-[8px] font-black text-[#10b981] tracking-wider">▲ BUY / LONG</span>
           </button>
-        </div>
-
-        {/* Change % badge */}
-        <div
-          className="hidden sm:flex flex-col justify-center px-2 py-1 rounded-lg border text-[10.5px] font-semibold"
-          style={{
-            borderColor: chg >= 0 ? "rgba(47,201,143,0.3)" : "rgba(240,84,108,0.3)",
-            color: chg >= 0 ? "var(--long)" : "var(--short)",
-            background: chg >= 0 ? "rgba(47,201,143,0.08)" : "rgba(240,84,108,0.08)",
-          }}
-        >
-          <span>{chg >= 0 ? "+" : "−"}{Math.abs(chg).toFixed(activeMeta.digits)}</span>
-          <span className="text-[9px] text-[var(--dim)]">{chgPct >= 0 ? "+" : "−"}{Math.abs(chgPct).toFixed(2)}%</span>
         </div>
       </div>
 
-      {/* 3. Right: Feed Mode, Chart View, Simulator Controls & Settings */}
-      <div className="flex items-center gap-2">
-        {/* Global Auto-Pilot vs Manual Execution Switch */}
-        <div className="flex items-center rounded-lg border border-white/10 p-0.5 bg-[#090d16]">
+      {/* 3. Right: Auto/Manual Switch, Live/Sim Mode & Global Tools */}
+      <div className="flex items-center gap-2.5 font-mono">
+        {/* GLOBAL AUTO vs MANUAL SWITCH */}
+        <div className="flex items-center rounded-lg border border-white/10 p-0.5 bg-[#101010]">
           <button
             onClick={onToggleAutoMode}
-            className={`flex items-center gap-1 px-2.5 py-1 rounded text-[10px] font-extrabold transition-all cursor-pointer ${
-              !cfg.actionCenter
-                ? "bg-[var(--long)] text-black font-black shadow"
-                : "text-[var(--dim)] hover:text-white"
+            className={`flex items-center gap-1 px-2.5 py-1 rounded-md text-[10.5px] font-extrabold transition-all cursor-pointer ${
+              isAutoMode
+                ? "bg-gradient-to-r from-emerald-600 to-emerald-500 text-black shadow font-black"
+                : "text-slate-500 hover:text-slate-300"
             }`}
             title="Auto-Pilot: Algorithmic signals execute directly to broker"
           >
+            <span className={`w-1.5 h-1.5 rounded-full ${isAutoMode ? "bg-black animate-ping" : "bg-slate-700"}`} />
             <span>⚡ AUTO</span>
           </button>
           <button
             onClick={onToggleAutoMode}
-            className={`flex items-center gap-1 px-2.5 py-1 rounded text-[10px] font-extrabold transition-all cursor-pointer ${
-              cfg.actionCenter
-                ? "bg-blue-600 text-white font-black shadow"
-                : "text-[var(--dim)] hover:text-white"
+            className={`flex items-center gap-1 px-2.5 py-1 rounded-md text-[10.5px] font-extrabold transition-all cursor-pointer ${
+              !isAutoMode
+                ? "bg-blue-600 text-white shadow font-black"
+                : "text-slate-500 hover:text-slate-300"
             }`}
             title="Manual: Signals held in Action Center for approval"
           >
+            <span className={`w-1.5 h-1.5 rounded-full ${!isAutoMode ? "bg-white" : "bg-slate-700"}`} />
             <span>🎯 MANUAL</span>
           </button>
         </div>
 
-        {/* Feed Mode Switch (LIVE vs SIM) */}
-        <div className="flex items-center rounded-lg border border-white/10 p-0.5 bg-[#090d16]">
+        {/* FEED MODE SWITCH (SIM vs LIVE) */}
+        <div className="flex items-center rounded-lg border border-white/10 p-0.5 bg-[#101010]">
           <button
             onClick={onToggleLiveMode}
-            className={`px-2.5 py-1 rounded text-[10px] font-bold transition-all cursor-pointer ${
-              !isLive ? "bg-[var(--gold)] text-black font-extrabold shadow" : "text-[var(--dim)] hover:text-white"
+            className={`px-2.5 py-1 rounded-md text-[10.5px] font-bold transition-all cursor-pointer ${
+              !isLive ? "bg-[#f59e0b] text-black font-extrabold shadow" : "text-slate-500 hover:text-white"
             }`}
           >
             SIM
           </button>
           <button
             onClick={onToggleLiveMode}
-            className={`flex items-center gap-1.5 px-2.5 py-1 rounded text-[10px] font-bold transition-all cursor-pointer ${
-              isLive ? "bg-[var(--long)] text-black font-extrabold shadow animate-pulse" : "text-[var(--dim)] hover:text-white"
+            className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10.5px] font-bold transition-all cursor-pointer ${
+              isLive
+                ? "bg-[#10b981] text-black font-extrabold shadow animate-pulse"
+                : "text-slate-500 hover:text-white"
             }`}
           >
             <span className="h-1.5 w-1.5 rounded-full bg-black" />
@@ -243,37 +233,23 @@ export default function HeaderBar({
           </button>
         </div>
 
-        {/* Chart View Toggle (Native Strategy Chart vs Official TradingView Widget) */}
-        <button
-          onClick={onToggleChartView}
-          className="hidden md:flex items-center gap-1 rounded-lg border border-white/10 px-2.5 py-1 text-[10.5px] font-bold transition-all hover:border-[var(--gold)] bg-[#0e1524]"
-          style={{
-            color: cfg.chartView === "tradingview" ? "var(--gold-hi)" : "var(--muted)",
-          }}
-          title="Toggle between Strategy Scanner Chart and Official TradingView Widget"
-        >
-          <span>{cfg.chartView === "tradingview" ? "📊 TRADINGVIEW" : "📈 STRATEGY CHART"}</span>
-        </button>
-
-        {/* Simulator speed buttons when in simulated mode */}
+        {/* Simulator Replay Controls (When in SIM mode) */}
         {!isLive && (
-          <div className="hidden lg:flex items-center overflow-hidden rounded-lg border border-white/10 bg-[#090d16]">
+          <div className="hidden lg:flex items-center overflow-hidden rounded-lg border border-white/10 bg-[#101010]">
             <button
               onClick={onToggleRun}
-              className="px-2 py-1 transition-colors hover:bg-[var(--bg3)] text-[var(--gold-hi)] font-bold"
-              title={running ? "Pause feed" : "Resume feed"}
+              className="px-2.5 py-1 transition-colors hover:bg-[#222] text-[#fcd34d] font-bold cursor-pointer"
+              title={running ? "Pause replay" : "Resume replay"}
             >
-              {running ? "⏸" : "▶"}
+              {running ? <Pause size={13} /> : <Play size={13} />}
             </button>
             {SPEEDS.map((s, i) => (
               <button
                 key={s.label}
                 onClick={() => onSpeed(i)}
-                className="border-l border-white/10 px-1.5 py-1 text-[9.5px] font-bold"
-                style={{
-                  color: speed === i ? "var(--gold-hi)" : "var(--dim)",
-                  background: speed === i ? "rgba(232,180,76,0.18)" : "transparent",
-                }}
+                className={`border-l border-white/10 px-2 py-1 text-[10px] font-bold cursor-pointer ${
+                  speed === i ? "bg-[#f59e0b]/20 text-[#fcd34d]" : "text-slate-500 hover:text-white"
+                }`}
               >
                 {s.label}
               </button>
@@ -281,39 +257,21 @@ export default function HeaderBar({
           </div>
         )}
 
-        {/* Audio Mute Toggle */}
-        <button
-          onClick={onToggleSound}
-          className="flex items-center gap-1 rounded-lg border border-white/10 px-2 py-1 text-[10.5px] font-bold transition-all hover:border-[var(--gold)]"
-          style={{
-            background: cfg.soundEnabled ? "rgba(47,201,143,0.12)" : "rgba(255,255,255,0.03)",
-            color: cfg.soundEnabled ? "var(--long)" : "var(--dim)",
-          }}
-          title={cfg.soundEnabled ? "Sound Alerts Active (Click to mute, or press 'M')" : "Sound Alerts Muted (Click to enable, or press 'M')"}
-        >
-          <span>{cfg.soundEnabled ? "🔊" : "🔇"}</span>
-        </button>
-
-        {/* Guide / Playbook button */}
-        <button
-          onClick={onOpenGuide}
-          className="flex items-center gap-1 rounded-lg border border-white/10 px-2.5 py-1 text-[10.5px] font-bold transition-all hover:border-[var(--gold)] bg-[#0e1524] text-[var(--gold-hi)]"
-          title="Open Strategy Guide & Explanations"
-        >
-          <span>📖 PLAYBOOK</span>
-        </button>
-
-        {/* Broker Execution Settings Launcher */}
+        {/* Settings & Guide Buttons */}
         <button
           onClick={onOpenBrokerSettings}
-          className="flex items-center gap-1 rounded-lg border px-2.5 py-1 text-[10.5px] font-bold transition-all hover:border-[var(--gold)] tactile-btn"
-          style={{
-            borderColor: "var(--gold-deep)",
-            background: "rgba(232,180,76,0.16)",
-            color: "var(--gold-hi)",
-          }}
+          className="p-1.5 rounded-lg bg-[#141414] hover:bg-[#222] border border-white/5 text-slate-300 transition-colors cursor-pointer"
+          title="Broker & Telegram Wire"
         >
-          <span>⚙️ BROKER</span>
+          <Settings size={15} />
+        </button>
+
+        <button
+          onClick={onOpenGuide}
+          className="p-1.5 rounded-lg bg-[#141414] hover:bg-[#222] border border-white/5 text-slate-300 transition-colors cursor-pointer"
+          title="Visual Strategy Guide"
+        >
+          <HelpCircle size={15} />
         </button>
       </div>
     </header>
