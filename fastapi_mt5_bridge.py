@@ -12,7 +12,62 @@ from typing import Literal, Optional
 from fastapi import FastAPI, Header, HTTPException, Request, Depends, status
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, field_validator
-import MetaTrader5 as mt5
+
+try:
+    import MetaTrader5 as mt5
+    MT5_AVAILABLE = True
+except (ImportError, ModuleNotFoundError):
+    MT5_AVAILABLE = False
+    class MockMT5:
+        ORDER_TYPE_BUY = 0
+        ORDER_TYPE_SELL = 1
+        ORDER_FILLING_FOK = 0
+        ORDER_FILLING_IOC = 1
+        ORDER_FILLING_RETURN = 2
+        TRADE_ACTION_DEAL = 1
+        ORDER_TIME_GTC = 0
+        TRADE_RETCODE_DONE = 10009
+
+        @staticmethod
+        def initialize(): return True
+        @staticmethod
+        def shutdown(): pass
+        @staticmethod
+        def last_error(): return (1, "Running in macOS Simulation/Mock Bridge Mode")
+        @staticmethod
+        def account_info():
+            class Acc:
+                login = 777888
+                balance = 10000.0
+                equity = 10000.0
+                currency = "USD"
+                leverage = 100
+                server = "Mock-Demo"
+            return Acc()
+        @staticmethod
+        def symbol_info(symbol):
+            class Sym:
+                digits = 2
+                filling_mode = 0
+            return Sym()
+        @staticmethod
+        def symbol_select(symbol, enable): return True
+        @staticmethod
+        def symbol_info_tick(symbol):
+            class Tick:
+                ask = 2650.50
+                bid = 2650.20
+            return Tick()
+        @staticmethod
+        def order_send(req):
+            class Res:
+                retcode = 10009
+                order = 99887766
+                price = req.get("price", 2650.50)
+                comment = "EXECUTED_IN_SIMULATION_BRIDGE"
+            return Res()
+
+    mt5 = MockMT5()
 
 DB = "trading_system.db"
 
