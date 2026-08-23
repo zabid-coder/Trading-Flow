@@ -1,26 +1,35 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:ital,wght@0,300;0,400;0,500;0,600;0,700;0,800;1,400&display=swap');
 @import "tailwindcss";
 
 :root {
-  --bg0: #0a0f18;
-  --bg1: #0e1522;
-  --bg2: #131c2d;
-  --bg3: #182338;
-  --line: #223149;
-  --line-soft: #1a2740;
-  --ink: #e9eff8;
-  --muted: #7f95b4;
-  --dim: #51647f;
-  --gold: #e8b44c;
-  --gold-hi: #f6d489;
-  --gold-deep: #8a651f;
-  --long: #2fc98f;
-  --long-deep: #14432f;
-  --short: #f0546c;
-  --short-deep: #4b1b26;
-  --info: #6e9bd8;
-  --font-display: "Space Grotesk", sans-serif;
-  --font-mono: "IBM Plex Mono", monospace;
-  --font-body: "IBM Plex Sans", sans-serif;
+  --bg-void: #050505;
+  --bg0: #050505;
+  --bg1: rgba(18, 18, 18, 0.85);
+  --bg2: #121212;
+  --bg3: #1a1a1a;
+  --card-bg: rgba(18, 18, 18, 0.85);
+  --line: rgba(255, 255, 255, 0.08);
+  --line-soft: rgba(255, 255, 255, 0.05);
+  --ink: #e5e5e5;
+  --text-primary: #e5e5e5;
+  --text-secondary: #9ca3af;
+  --muted: #9ca3af;
+  --dim: #6b7280;
+  
+  /* Institutional Palette */
+  --gold: #f59e0b;
+  --gold-hi: #fcd34d;
+  --gold-deep: #b45309;
+  --gold-grad: linear-gradient(135deg, #fcd34d 0%, #b45309 100%);
+  --long: #10b981;
+  --long-deep: #064e3b;
+  --short: #ef4444;
+  --short-deep: #7f1d1d;
+  --info: #3b82f6;
+  
+  --font-display: "Inter", -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-mono: "JetBrains Mono", "IBM Plex Mono", monospace;
+  --font-body: "Inter", -apple-system, BlinkMacSystemFont, sans-serif;
 }
 
 * { box-sizing: border-box; }
@@ -31,13 +40,13 @@ body {
   margin: 0;
   font-family: var(--font-body);
   color: var(--ink);
-  background-color: var(--bg0);
+  background-color: var(--bg-void);
   background-image:
-    radial-gradient(1100px 480px at 78% -10%, rgba(232, 180, 76, 0.09), transparent 62%),
-    radial-gradient(900px 520px at 8% 108%, rgba(110, 155, 216, 0.07), transparent 60%),
-    linear-gradient(rgba(127, 149, 180, 0.045) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(127, 149, 180, 0.045) 1px, transparent 1px);
-  background-size: auto, auto, 44px 44px, 44px 44px;
+    radial-gradient(1200px 550px at 80% -10%, rgba(245, 158, 11, 0.06), transparent 60%),
+    radial-gradient(1000px 600px at 10% 110%, rgba(59, 130, 246, 0.05), transparent 60%),
+    linear-gradient(rgba(255, 255, 255, 0.02) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.02) 1px, transparent 1px);
+  background-size: auto, auto, 40px 40px, 40px 40px;
   background-attachment: fixed;
 }
 

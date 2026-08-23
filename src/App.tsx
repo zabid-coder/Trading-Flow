@@ -39,6 +39,7 @@ import BrokerSettingsModal from "./components/BrokerSettingsModal";
 import StrategyGuideModal from "./components/StrategyGuideModal";
 import UniversalOrderModal from "./components/UniversalOrderModal";
 import Dashboard from "./components/Dashboard";
+import DashboardLayout from "./components/DashboardLayout";
 import DashboardOverviewView from "./components/DashboardOverviewView";
 import TradesLedgerView from "./components/TradesLedgerView";
 import AnalysisMatrixView from "./components/AnalysisMatrixView";
@@ -614,124 +615,21 @@ function TerminalContent() {
             </main>
           )}
 
-          {/* VIEW: LIVE TRADING TERMINAL */}
+          {/* VIEW: LIVE TRADING TERMINAL (3-COLUMN BENTO GRID) */}
           {dashboardView === "terminal" && (
-            <main className="flex-1 overflow-y-auto p-2.5 lg:p-3 custom-scrollbar">
-              <div className="mx-auto grid w-full max-w-[1880px] grid-cols-12 items-start gap-2.5">
-                {/* Left Column: Watchlist */}
-                <section className="hidden md:block md:col-span-3 lg:col-span-2">
-                  <MarketWatchlist
-                    activeSymbol={cfg.activeSymbol}
-                    onSelect={selectSymbol}
-                    price={st.bars[st.bars.length - 1]?.c || st.price}
-                    feedMode={cfg.feedMode}
-                  />
-                </section>
-
-                {/* Center Column: Chart & Dock */}
-                <section className="col-span-12 md:col-span-9 lg:col-span-7 flex flex-col gap-2.5">
-                  <PipelineStrip st={st} />
-
-                  <CandleChart
-                    st={st}
-                    cfg={cfg}
-                    onDecide={onDecide}
-                    onMoveToBreakeven={() => {
-                      moveToBreakeven(st, cfg);
-                      setTick((t) => t + 1);
-                    }}
-                    onPartialClose={(ratio) => {
-                      partialClose(st, cfg, ratio);
-                      setTick((t) => t + 1);
-                    }}
-                  />
-
-                  <BottomTerminalTabs
-                    st={st}
-                    cfg={cfg}
-                    stats={stats}
-                    onClosePosition={closeOpenPosition}
-                    onMoveToBreakeven={handleMoveToBreakeven}
-                    onPartialClose={handlePartialClose}
-                  />
-                </section>
-
-                {/* Right Column: Execution Desk & Radar */}
-                <aside className="col-span-12 lg:col-span-3 flex flex-col gap-2 font-mono">
-                  <div
-                    className="flex items-center rounded-lg border p-0.5"
-                    style={{ borderColor: "var(--line)", background: "var(--bg2)" }}
-                  >
-                    <button
-                      onClick={() => setRightTab("signals")}
-                      className={`flex-1 py-1.5 rounded text-[10px] font-bold transition-all relative ${
-                        rightTab === "signals"
-                          ? "bg-[var(--gold)] text-black font-black"
-                          : "text-[var(--muted)] hover:text-white"
-                      }`}
-                    >
-                      <span>⚡ SIGNALS</span>
-                      {pendingSignalsCount > 0 && (
-                        <span className="ml-1 px-1 py-px rounded-full bg-[var(--short)] text-white text-[8px] font-extrabold animate-bounce">
-                          {pendingSignalsCount}
-                        </span>
-                      )}
-                    </button>
-
-                    <button
-                      onClick={() => setRightTab("order")}
-                      className={`flex-1 py-1.5 rounded text-[10px] font-bold transition-all ${
-                        rightTab === "order"
-                          ? "bg-[var(--gold)] text-black font-black"
-                          : "text-[var(--muted)] hover:text-white"
-                      }`}
-                    >
-                      🎯 ORDER DESK
-                    </button>
-
-                    <button
-                      onClick={() => setRightTab("strategy")}
-                      className={`flex-1 py-1.5 rounded text-[10px] font-bold transition-all ${
-                        rightTab === "strategy"
-                          ? "bg-[var(--gold)] text-black font-black"
-                          : "text-[var(--muted)] hover:text-white"
-                      }`}
-                    >
-                      🧠 RADAR
-                    </button>
-
-                    <button
-                      onClick={() => setRightTab("risk")}
-                      className={`flex-1 py-1.5 rounded text-[10px] font-bold transition-all ${
-                        rightTab === "risk"
-                          ? "bg-[var(--gold)] text-black font-black"
-                          : "text-[var(--muted)] hover:text-white"
-                      }`}
-                    >
-                      🛡️ RISK
-                    </button>
-                  </div>
-
-                  {rightTab === "signals" && (
-                    <div className="min-h-[300px]">
-                      <ActionCenter st={st} cfg={cfg} onDecide={onDecide} />
-                    </div>
-                  )}
-
-                  {rightTab === "order" && (
-                    <OrderDesk st={st} cfg={cfg} onExecuteManual={handleExecuteManual} />
-                  )}
-
-                  {rightTab === "strategy" && (
-                    <StrategyRadar st={st} cfg={cfg} onCfg={patchCfg} />
-                  )}
-
-                  {rightTab === "risk" && (
-                    <ConsolePanel cfg={cfg} onCfg={patchCfg} onAoi={patchAoi} st={st} stats={stats} />
-                  )}
-                </aside>
-              </div>
-            </main>
+            <div className="flex-1 overflow-y-auto custom-scrollbar">
+              <DashboardLayout
+                st={st}
+                cfg={cfg}
+                stats={stats}
+                onExecuteOrder={handleExecuteManual}
+                onClosePosition={closeOpenPosition}
+                onMoveToBreakeven={handleMoveToBreakeven}
+                onScaleOut={handlePartialClose}
+                onDecide={onDecide}
+                onOpenSettings={() => setBrokerModalOpen(true)}
+              />
+            </div>
           )}
         </div>
       </div>
