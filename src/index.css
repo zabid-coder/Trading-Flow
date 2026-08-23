@@ -257,3 +257,27 @@ input[type="range"]::-webkit-slider-thumb:hover { transform: scale(1.25); }
 .custom-scrollbar::-webkit-scrollbar-thumb:hover {
   background: #334155;
 }
+
+.glow-text-green {
+  text-shadow: 0 0 10px rgba(16, 185, 129, 0.5);
+}
+.glow-text-red {
+  text-shadow: 0 0 10px rgba(244, 63, 94, 0.5);
+}
+
+/* Animations */
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+.animate-pulse-dot {
+  animation: pulse-dot 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+@keyframes slide-up {
+  from { transform: translateY(20px); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+.animate-slide-up {
+  animation: slide-up 0.5s ease-out forwards;
+}

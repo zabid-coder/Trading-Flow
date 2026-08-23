@@ -38,6 +38,7 @@ import BottomTerminalTabs from "./components/BottomTerminalTabs";
 import BrokerSettingsModal from "./components/BrokerSettingsModal";
 import StrategyGuideModal from "./components/StrategyGuideModal";
 import UniversalOrderModal from "./components/UniversalOrderModal";
+import Dashboard from "./components/Dashboard";
 import DashboardOverviewView from "./components/DashboardOverviewView";
 import TradesLedgerView from "./components/TradesLedgerView";
 import AnalysisMatrixView from "./components/AnalysisMatrixView";
@@ -527,14 +528,15 @@ function TerminalContent() {
 
         {/* Dynamic Route Content */}
         <div className="flex-1 flex overflow-hidden bg-[#080d18] relative">
-          {/* VIEW: DASHBOARD OVERVIEW */}
+          {/* VIEW: DASHBOARD OVERVIEW (INSTITUTIONAL BENTO REDESIGN) */}
           {dashboardView === "dashboard" && (
-            <DashboardOverviewView
+            <Dashboard
               st={st}
               cfg={cfg}
               stats={stats}
               onNavigateToTrades={() => setDashboardView("trades")}
               onNavigateToTerminal={() => setDashboardView("terminal")}
+              onOpenSettings={() => setBrokerModalOpen(true)}
             />
           )}
 
