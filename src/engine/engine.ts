@@ -980,6 +980,111 @@ function evaluate(st: EngineState, cfg: EngineConfig, bar: Bar, cls: CandleClass
     score: mtcScore,
   };
 
+  // --- CHRIS CREAMER 4-PILLAR FREE INSTITUTIONAL FRAMEWORK ---
+  // 1. Environment: Synthetic GEX & Value Regime
+  const ivProxy = Number(((atr / Math.max(1, bar.c)) * 100 * Math.sqrt(252)).toFixed(1));
+  const pcrDiff = (st.ema50 - bar.c) / Math.max(1, atr);
+  const syntheticPcr = Number(Math.max(0.4, Math.min(2.2, 1.0 + pcrDiff * 0.35)).toFixed(2));
+  const gexState: "POSITIVE_GAMMA" | "NEGATIVE_GAMMA" | "NEUTRAL_GAMMA" =
+    syntheticPcr >= 1.15 && ivProxy < 25
+      ? "POSITIVE_GAMMA"
+      : syntheticPcr <= 0.85 || ivProxy >= 32
+      ? "NEGATIVE_GAMMA"
+      : "NEUTRAL_GAMMA";
+
+  const pdhRef = st.pdh || st.dayHigh;
+  const pdlRef = st.pdl || st.dayLow;
+  const valueRegime: "VALUE_UP_EXPANSION" | "VALUE_DOWN_EXPANSION" | "VALUE_RANGE_BOUND" =
+    bar.c > pdhRef
+      ? "VALUE_UP_EXPANSION"
+      : bar.c < pdlRef
+      ? "VALUE_DOWN_EXPANSION"
+      : "VALUE_RANGE_BOUND";
+
+  // 2. Location: Institutional OTE Fibonacci (70.5% - 78.8% - 88.6%)
+  let swingHigh = bar.h;
+  let swingLow = bar.l;
+  const lookbackFib = Math.min(idx, 36);
+  for (let j = idx - lookbackFib; j <= idx; j++) {
+    if (st.bars[j].h > swingHigh) swingHigh = st.bars[j].h;
+    if (st.bars[j].l < swingLow) swingLow = st.bars[j].l;
+  }
+  const fibRange = Math.max(0.2, swingHigh - swingLow);
+
+  // Bullish OTE (Discount Buy Zone)
+  const fib705_buy = Number((swingHigh - fibRange * 0.705).toFixed(2));
+  const fib788_buy = Number((swingHigh - fibRange * 0.788).toFixed(2));
+  const fib886_buy = Number((swingHigh - fibRange * 0.886).toFixed(2));
+  const inDiscountBuy = bar.c >= fib886_buy && bar.c <= fib705_buy;
+
+  // Bearish OTE (Premium Sell Zone)
+  const fib705_sell = Number((swingLow + fibRange * 0.705).toFixed(2));
+  const fib788_sell = Number((swingLow + fibRange * 0.788).toFixed(2));
+  const fib886_sell = Number((swingLow + fibRange * 0.886).toFixed(2));
+  const inPremiumSell = bar.c <= fib886_sell && bar.c >= fib705_sell;
+
+  const inOteZone = inDiscountBuy || inPremiumSell;
+  const oteZoneType: "DISCOUNT_BUY" | "PREMIUM_SELL" | "NONE" = inDiscountBuy
+    ? "DISCOUNT_BUY"
+    : inPremiumSell
+    ? "PREMIUM_SELL"
+    : "NONE";
+
+  // 3. Confirmation: Volume Delta & Passive Absorption
+  const candleRange = Math.max(0.01, bar.h - bar.l);
+  const deltaRatio = (bar.c - bar.o) / candleRange;
+  const barDelta = Math.round((bar.v || 500) * deltaRatio);
+  const prevCvd = st.creamerFramework?.cumulativeDelta || 0;
+  const cumulativeDelta = prevCvd + barDelta;
+
+  let absorption: "PASSIVE_BUYER_ABSORPTION" | "PASSIVE_SELLER_ABSORPTION" | "NONE" = "NONE";
+  let absorptionDesc = "Balanced Order Flow";
+
+  const lowerWick = Math.min(bar.o, bar.c) - bar.l;
+  const upperWick = bar.h - Math.max(bar.o, bar.c);
+
+  if (barDelta < -150 && lowerWick >= 0.45 * candleRange && (cls === "LPR" || bar.c > bar.o)) {
+    absorption = "PASSIVE_BUYER_ABSORPTION";
+    absorptionDesc = `Passive Buyer Absorption detected (Delta ${barDelta} absorbed at ${fmtP(bar.l)})`;
+  } else if (barDelta > 150 && upperWick >= 0.45 * candleRange && (cls === "HPR" || bar.c < bar.o)) {
+    absorption = "PASSIVE_SELLER_ABSORPTION";
+    absorptionDesc = `Passive Seller Absorption detected (Delta +${barDelta} absorbed at ${fmtP(bar.h)})`;
+  }
+
+  // 4. Creamer Confluence Score (0 - 100)
+  let creamerScore = 0;
+  if (gexState === "POSITIVE_GAMMA" && (inDiscountBuy || inPremiumSell)) creamerScore += 30;
+  else if (gexState === "NEGATIVE_GAMMA" && valueRegime !== "VALUE_RANGE_BOUND") creamerScore += 30;
+  else creamerScore += 15;
+
+  if (inOteZone) creamerScore += 30;
+  else creamerScore += 10;
+
+  if (absorption !== "NONE") creamerScore += 25;
+  else if (cls === "LPR" || cls === "HPR") creamerScore += 15;
+
+  if (st.activeKillzone === "LONDON" || st.activeKillzone === "NEW_YORK") creamerScore += 15;
+
+  st.creamerFramework = {
+    gexState,
+    pcrRatio: syntheticPcr,
+    impliedVolProxy: ivProxy,
+    valueRegime,
+    swingHigh,
+    swingLow,
+    fib705: oteZoneType === "DISCOUNT_BUY" ? fib705_buy : fib705_sell,
+    fib788: oteZoneType === "DISCOUNT_BUY" ? fib788_buy : fib788_sell,
+    fib886: oteZoneType === "DISCOUNT_BUY" ? fib886_buy : fib886_sell,
+    inOteZone,
+    oteZoneType,
+    barDelta,
+    cumulativeDelta,
+    absorption,
+    absorptionDesc,
+    totalConfluenceScore: Math.min(100, creamerScore),
+    isSetupReady: inOteZone && absorption !== "NONE" && creamerScore >= 70,
+  };
+
   // --- RANGE BREAKOUT EA LOGIC ---
   if (cfg.rbEnabled && (st.rbState === "ACTIVE" || st.rbState === "FORMING") && st.rbHigh != null && st.rbLow != null) {
     const isGold = (cfg.activeSymbol || "").startsWith("XAU");

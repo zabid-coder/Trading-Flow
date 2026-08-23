@@ -80,6 +80,44 @@ export default function PipelineStrip({ st }: { st: EngineState }) {
               ASIAN {st.asianHigh.toFixed(1)} / {st.asianLow.toFixed(1)}
             </span>
           )}
+          {/* Chris Creamer Institutional Framework: Synthetic GEX */}
+          {st.creamerFramework && (
+            <>
+              <span
+                className={`rounded px-2 py-0.5 font-mono text-[9px] font-extrabold tracking-wider border flex items-center gap-1 ${
+                  st.creamerFramework.gexState === "POSITIVE_GAMMA"
+                    ? "bg-blue-500/10 border-blue-500/30 text-blue-400"
+                    : st.creamerFramework.gexState === "NEGATIVE_GAMMA"
+                    ? "bg-purple-500/10 border-purple-500/30 text-purple-400"
+                    : "bg-white/5 border-white/10 text-slate-400"
+                }`}
+              >
+                <span>GEX:</span>
+                <span>{st.creamerFramework.gexState.replace("_GAMMA", "")}</span>
+                <span className="text-[8px] opacity-75">(PCR {st.creamerFramework.pcrRatio})</span>
+              </span>
+
+              {/* Fibonacci OTE Kill Zone (0.705 - 0.886) */}
+              <span
+                className={`rounded px-2 py-0.5 font-mono text-[9px] font-extrabold tracking-wider border flex items-center gap-1 ${
+                  st.creamerFramework.inOteZone
+                    ? "bg-emerald-500/20 border-emerald-500 text-emerald-300 animate-pulse"
+                    : "bg-white/5 border-white/10 text-slate-400"
+                }`}
+              >
+                <span>OTE FIB:</span>
+                <span>{st.creamerFramework.inOteZone ? `ZONE (${st.creamerFramework.oteZoneType.replace("_", " ")})` : `${st.creamerFramework.fib705} / ${st.creamerFramework.fib886}`}</span>
+              </span>
+
+              {/* Volume Delta & Absorption */}
+              {st.creamerFramework.absorption !== "NONE" && (
+                <span className="rounded px-2 py-0.5 font-mono text-[9px] font-extrabold tracking-wider border bg-amber-500/20 border-amber-500 text-amber-300 animate-bounce">
+                  ⚡ {st.creamerFramework.absorption.replace(/_/g, " ")}
+                </span>
+              )}
+            </>
+          )}
+
           {/* Upcoming High-Impact News Alert */}
           {st.upcomingNews && (
             <span

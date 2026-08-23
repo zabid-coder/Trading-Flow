@@ -20,38 +20,39 @@ export const MarketVision: React.FC<Props> = ({ st, cfg }) => {
   const mtc = st.mtcAlignment;
   const le = st.lastEval;
 
+  const cf = st.creamerFramework;
   const checks = useMemo(() => [
     {
-      id: 'trend',
-      label: '4H Trend Aligned',
-      ok: mtc?.h4 === 'BULLISH' || (st.ema50 > st.ema200),
-      desc: st.ema50 > st.ema200 ? 'EMA50 > EMA200 (Bullish)' : 'Bearish Trend',
+      id: 'gex',
+      label: '1. GEX Environment',
+      ok: cf?.gexState === 'POSITIVE_GAMMA' || cf?.valueRegime !== 'VALUE_RANGE_BOUND',
+      desc: cf ? `${cf.gexState.replace('_GAMMA', '')} (PCR: ${cf.pcrRatio})` : 'Neutral Gamma',
+    },
+    {
+      id: 'ote',
+      label: '2. Location (OTE Fib)',
+      ok: !!cf?.inOteZone,
+      desc: cf?.inOteZone ? `${cf.oteZoneType.replace('_', ' ')} (0.705-0.886)` : `Extremes: ${cf?.fib705 || 0} / ${cf?.fib886 || 0}`,
+    },
+    {
+      id: 'absorption',
+      label: '3. Volume Absorption',
+      ok: cf?.absorption !== 'NONE' || (le.cls === 'LPR' || le.cls === 'HPR'),
+      desc: cf?.absorption && cf.absorption !== 'NONE' ? cf.absorption.replace(/_/g, ' ') : `Delta ${cf?.barDelta || 0} (${le.cls})`,
     },
     {
       id: 'asian',
-      label: 'Asian Fakeout Ready',
+      label: '4. Asian Fakeout',
       ok: st.asianHigh != null && st.asianLow != null,
       desc: st.asianHigh ? `H: ${fmtP(st.asianHigh)} / L: ${fmtP(st.asianLow || 0)}` : 'Building Range',
     },
     {
-      id: 'liquidity',
-      label: 'AOI Liquidity Sweep',
-      ok: le.checks.some(c => c.k === 'AOI CONTACT' && c.ok),
-      desc: le.checks.find(c => c.k === 'AOI CONTACT')?.v || 'Scanning Zones',
+      id: 'macro',
+      label: '5. Macro & News',
+      ok: !st.upcomingNews?.isCooldownActive && (st.dxyTrend === 'BEARISH' || mtc?.aligned),
+      desc: st.upcomingNews?.isCooldownActive ? 'News Cooldown' : `DXY ${st.dxyValue || 104.25} (${st.dxyTrend || 'OK'})`,
     },
-    {
-      id: 'dxy',
-      label: 'DXY Inverse Macro',
-      ok: st.dxyTrend === 'BEARISH' || mtc?.aligned,
-      desc: `DXY ${st.dxyValue || 104.25} (${st.dxyTrend || 'NEUTRAL'})`,
-    },
-    {
-      id: 'news',
-      label: 'News Calendar Clear',
-      ok: !st.upcomingNews?.isCooldownActive,
-      desc: st.upcomingNews ? (st.upcomingNews.isCooldownActive ? '±15m Cooldown Active' : st.upcomingNews.event) : 'No High Impact News',
-    },
-  ], [st, mtc, le]);
+  ], [st, mtc, le, cf]);
 
   // Session / Countdown Timer (Next Killzone or News)
   const sessionCountdown = useMemo(() => {

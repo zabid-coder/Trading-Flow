@@ -638,6 +638,34 @@ export interface EngineState {
     minutesUntil: number;
     isCooldownActive: boolean;
   } | null;
+
+  // Chris Creamer 4-Pillar Free Institutional Architecture
+  creamerFramework?: {
+    // 1. Environment
+    gexState: "POSITIVE_GAMMA" | "NEGATIVE_GAMMA" | "NEUTRAL_GAMMA";
+    pcrRatio: number; // Put/Call Ratio
+    impliedVolProxy: number;
+    valueRegime: "VALUE_UP_EXPANSION" | "VALUE_DOWN_EXPANSION" | "VALUE_RANGE_BOUND";
+
+    // 2. Location (Institutional OTE Fibonacci 70.5% - 78.8% - 88.6%)
+    swingHigh: number;
+    swingLow: number;
+    fib705: number;
+    fib788: number;
+    fib886: number;
+    inOteZone: boolean;
+    oteZoneType: "DISCOUNT_BUY" | "PREMIUM_SELL" | "NONE";
+
+    // 3. Confirmation (Volume Delta & Absorption)
+    barDelta: number; // (Buy Vol - Sell Vol)
+    cumulativeDelta: number; // CVD
+    absorption: "PASSIVE_BUYER_ABSORPTION" | "PASSIVE_SELLER_ABSORPTION" | "NONE";
+    absorptionDesc: string;
+
+    // 4. Execution & Score
+    totalConfluenceScore: number; // 0 - 100
+    isSetupReady: boolean;
+  };
 }
 
 export const fmtP = (x: number, digits: number = 2) => x.toFixed(digits);
