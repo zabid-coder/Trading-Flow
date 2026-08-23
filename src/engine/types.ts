@@ -487,7 +487,19 @@ export interface SessionLevels {
   ovlL: number;
 }
 
-export type MarketRegime = "TRENDING_BULL" | "TRENDING_BEAR" | "RANGING_CHOP" | "LIQUIDITY_HUNT";
+export type MarketRegime =
+  | "STRONG_BULL"
+  | "WEAK_BULL"
+  | "STRONG_BEAR"
+  | "WEAK_BEAR"
+  | "RANGING"
+  | "VOLATILE_EXPANSION"
+  | "LIQUIDITY_GRAB"
+  | "NEWS_SPIKE"
+  | "TRENDING_BULL"
+  | "TRENDING_BEAR"
+  | "RANGING_CHOP"
+  | "LIQUIDITY_HUNT";
 
 export interface EngineState {
   seed: number;
