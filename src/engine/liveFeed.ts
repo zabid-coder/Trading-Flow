@@ -1,4 +1,5 @@
 import { Bar, SUPPORTED_SYMBOLS, Timeframe, TIMEFRAMES } from "./types";
+import { secureRandomFloat, secureRandomInt } from "../utils/crypto";
 
 export interface LiveFeedListener {
   onBar: (bar: Bar, isClosed: boolean) => void;
@@ -101,7 +102,7 @@ export function connectLiveFeed(
         if (pingInterval) window.clearInterval(pingInterval);
         pingInterval = window.setInterval(() => {
           if (ws?.readyState === WebSocket.OPEN) {
-            listener.onStatus("connected", Math.floor(15 + Math.random() * 25));
+            listener.onStatus("connected", secureRandomInt(15, 38));
           }
         }, 5000);
 
@@ -118,6 +119,7 @@ export function connectLiveFeed(
       ws.onmessage = (event) => {
         lastMessageTime = Date.now();
         try {
+          if (!event.data || typeof event.data !== "string") return;
           const payload = JSON.parse(event.data);
           if (payload.e === "kline" && payload.k) {
             const k = payload.k;
@@ -142,12 +144,13 @@ export function connectLiveFeed(
             listener.onBar(bar, isClosed);
           }
         } catch (e) {
-          console.error("Error parsing live kline:", e);
+          console.error("Error parsing live kline frame:", e);
+          listener.onStatus("error", 0);
         }
       };
 
       ws.onerror = (err) => {
-        console.warn("Live WebSocket error:", err);
+        console.warn("Live WebSocket stream error:", err);
         listener.onStatus("error", 0);
       };
 
@@ -156,8 +159,8 @@ export function connectLiveFeed(
         if (heartbeatCheckInterval) window.clearInterval(heartbeatCheckInterval);
         if (!closedManually) {
           listener.onStatus("disconnected", 0);
-          // Exponential backoff with jitter: 2s, 4s, 8s, up to 30s
-          const delay = Math.min(30000, 2000 * Math.pow(1.8, retryCount) + Math.random() * 1000);
+          // Exponential backoff with secure jitter: 2s, 4s, 8s, up to 30s
+          const delay = Math.min(30000, 2000 * Math.pow(1.8, retryCount) + secureRandomFloat() * 1000);
           retryCount++;
           console.log(`[LiveFeed] Reconnecting in ${Math.round(delay / 1000)}s (attempt ${retryCount})...`);
           reconnectTimeout = window.setTimeout(() => {
@@ -206,13 +209,13 @@ function generateFallbackWarmup(symbol: string, timeframe: Timeframe, count: num
   for (let i = count; i >= 0; i--) {
     const t = now - i * step;
     const vol = price * 0.0015;
-    const delta = (Math.random() - 0.49) * vol;
+    const delta = (secureRandomFloat() - 0.49) * vol;
     const o = price;
     const c = o + delta;
-    const h = Math.max(o, c) + Math.random() * vol * 0.5;
-    const l = Math.min(o, c) - Math.random() * vol * 0.5;
+    const h = Math.max(o, c) + secureRandomFloat() * vol * 0.5;
+    const l = Math.min(o, c) - secureRandomFloat() * vol * 0.5;
     price = c;
-    bars.push({ t, o, h, l, c, v: 10 + Math.random() * 50, day: Math.floor(t / 86400000) });
+    bars.push({ t, o, h, l, c, v: 10 + secureRandomFloat() * 50, day: Math.floor(t / 86400000) });
   }
   return bars;
 }

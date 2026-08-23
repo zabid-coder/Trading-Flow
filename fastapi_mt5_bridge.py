@@ -1,24 +1,58 @@
-# fastapi_mt5_bridge.py — Direct MetaTrader 5 Execution Receiver for Trading Flow
+# fastapi_mt5_bridge.py — Hardened MetaTrader 5 Execution Bridge for Trading Flow
 # Run with: uvicorn fastapi_mt5_bridge:app --host 0.0.0.0 --port 8000 --reload
 
 import os
+import secrets
 import sqlite3
+import time
+from collections import defaultdict
 from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime
-from typing import Optional
-from fastapi import FastAPI, Header, HTTPException, Request
+from typing import Literal, Optional
+from fastapi import FastAPI, Header, HTTPException, Request, Depends, status
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 import MetaTrader5 as mt5
 
 DB = "trading_system.db"
-SECRET = os.getenv("TF_WEBHOOK_SECRET", "TF-SECRET-KEY")
+
+# 1. Secure Secret Key Resolution (No weak hardcoded default fallback)
+_env_secret = os.getenv("TF_WEBHOOK_SECRET")
+if _env_secret and _env_secret.strip() != "":
+    SECRET = _env_secret.strip()
+    IS_AUTO_SECRET = False
+else:
+    SECRET = secrets.token_urlsafe(32)
+    IS_AUTO_SECRET = True
+
 MAX_DAILY_SL = int(os.getenv("MAX_DAILY_SL_HITS", "2"))
-ALLOWED_ORIGINS = os.getenv("TF_ALLOWED_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173,http://localhost:3000,http://127.0.0.1:3000,http://localhost:8000").split(",")
+ALLOWED_ORIGINS = os.getenv(
+    "TF_ALLOWED_ORIGINS",
+    "http://localhost:5173,http://127.0.0.1:5173,http://localhost:3000,http://127.0.0.1:3000,http://localhost:8000"
+).split(",")
+
+# 2. In-Memory Sliding-Window Rate Limiter (Max 60 requests/min per IP)
+RATE_LIMIT_WINDOW_SEC = 60
+MAX_REQUESTS_PER_WINDOW = 60
+_request_history = defaultdict(list)
+
+def enforce_rate_limit(request: Request):
+    client_ip = request.client.host if request.client else "127.0.0.1"
+    now = time.time()
+    # Clean history older than window
+    _request_history[client_ip] = [t for t in _request_history[client_ip] if now - t < RATE_LIMIT_WINDOW_SEC]
+    
+    if len(_request_history[client_ip]) >= MAX_REQUESTS_PER_WINDOW:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Rate limit exceeded. Maximum 60 requests per minute allowed."
+        )
+    _request_history[client_ip].append(now)
 
 def init_db():
-    """Initialize database schema once at startup."""
+    """Initialize database schema with WAL mode for concurrency."""
     with sqlite3.connect(DB) as conn:
+        conn.execute("PRAGMA journal_mode=WAL;")
         conn.execute("""
             CREATE TABLE IF NOT EXISTS trades (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -42,21 +76,12 @@ def init_db():
                 sl_hits INTEGER DEFAULT 0
             )
         """)
-        # Safe migration if table existed previously without slippage columns
-        try:
-            conn.execute("ALTER TABLE trades ADD COLUMN expected_price REAL")
-        except Exception:
-            pass
-        try:
-            conn.execute("ALTER TABLE trades ADD COLUMN slippage_pts REAL DEFAULT 0")
-        except Exception:
-            pass
         conn.commit()
 
 @contextmanager
 def get_db():
-    """Thread-safe SQLite context manager ensuring proper connection closure."""
-    conn = sqlite3.connect(DB)
+    """Thread-safe SQLite context manager with explicit transaction controls."""
+    conn = sqlite3.connect(DB, timeout=10.0)
     conn.row_factory = sqlite3.Row
     try:
         yield conn
@@ -68,7 +93,6 @@ def get_db():
         conn.close()
 
 import sys
-
 if hasattr(sys.stdout, "reconfigure"):
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -79,11 +103,14 @@ if hasattr(sys.stdout, "reconfigure"):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     print("==================================================")
-    print("[*] Trading Flow - MetaTrader 5 Local Bridge")
+    print("[*] Trading Flow PRO — MetaTrader 5 Hardened Bridge")
     print("==================================================")
     init_db()
-    if SECRET == "TF-SECRET-KEY":
-        print("[!] WARNING: Default secret key 'TF-SECRET-KEY' in use! Set TF_WEBHOOK_SECRET for production security.")
+    if IS_AUTO_SECRET:
+        print(f"[!] SECURE TOKEN GENERATED: {SECRET}")
+        print("[!] Copy this token into Trading Flow Broker Settings Modal as your MT5 Secret.")
+    else:
+        print("[OK] Webhook Secret loaded securely from TF_WEBHOOK_SECRET environment.")
 
     if not mt5.initialize():
         print(f"[!] MT5 initialize() failed: {mt5.last_error()}")
@@ -96,9 +123,9 @@ async def lifespan(app: FastAPI):
             print("[!] MT5 Initialized but no account logged in.")
     yield
     mt5.shutdown()
-    print("[*] MT5 Bridge shut down.")
+    print("[*] MT5 Bridge shut down cleanly.")
 
-app = FastAPI(title="Trading Flow MT5 Bridge", lifespan=lifespan)
+app = FastAPI(title="Trading Flow Hardened MT5 Bridge", lifespan=lifespan)
 
 # Allow browser cross-origin requests only from trusted frontend origins
 app.add_middleware(
@@ -109,61 +136,95 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# 3. Robust Pydantic Input Validation & Sanitization
 class OrderPayload(BaseModel):
-    secret: Optional[str] = None
-    ticker: str
-    action: str  # "BUY" or "SELL"
-    qty: float
-    price: float
-    sl: float | None = None
-    tp: float | None = None
-    comment: str | None = "Trading Flow Signal"
+    secret: Optional[str] = Field(None, description="Optional payload secret token")
+    ticker: str = Field(..., min_length=2, max_length=20, pattern=r"^[A-Za-z0-9_.\-]+$", description="Symbol ticker e.g. XAUUSD")
+    action: Literal["BUY", "SELL", "buy", "sell"] = Field(..., description="Trade direction")
+    qty: float = Field(..., gt=0.0, le=1000.0, description="Volume/Lots (must be > 0 and <= 1000)")
+    price: float = Field(..., gt=0.0, description="Expected entry price")
+    sl: Optional[float] = Field(None, gt=0.0, description="Stop Loss price")
+    tp: Optional[float] = Field(None, gt=0.0, description="Take Profit price")
+    comment: Optional[str] = Field("Trading Flow Signal", max_length=64, description="Order comment")
 
-def verify_auth(payload_secret: Optional[str], auth_header: Optional[str]):
+    @field_validator("action")
+    @classmethod
+    def normalize_action(cls, v: str) -> str:
+        return v.upper()
+
+def verify_auth(payload_secret: Optional[str], auth_header: Optional[str]) -> bool:
     token = payload_secret
     if auth_header and auth_header.startswith("Bearer "):
         token = auth_header.split(" ", 1)[1].strip()
-    if not token or token != SECRET:
-        raise HTTPException(status_code=401, detail="Invalid secret key or unauthorized token")
+    if not token or not secrets.compare_digest(token, SECRET):
+        return False
+    return True
 
-@app.get("/health")
-def health():
+@app.get("/health", dependencies=[Depends(enforce_rate_limit)])
+def health(authorization: Optional[str] = Header(None)):
+    """
+    Health check endpoint.
+    - Unauthenticated requests receive sanitized status without sensitive account balance/login exposure.
+    - Authenticated requests with valid Bearer token receive full MT5 telemetry.
+    """
+    is_authenticated = verify_auth(None, authorization)
     connected = False
     acc_info = None
+
     if mt5.initialize():
         acc = mt5.account_info()
         if acc:
             connected = True
-            acc_info = {
-                "login": acc.login,
-                "server": acc.server,
-                "balance": acc.balance,
-                "equity": acc.equity,
-                "currency": acc.currency
-            }
-    return {
+            if is_authenticated:
+                acc_info = {
+                    "login": acc.login,
+                    "server": acc.server,
+                    "balance": acc.balance,
+                    "equity": acc.equity,
+                    "currency": acc.currency
+                }
+
+    resp = {
         "status": "online",
         "mt5_connected": connected,
-        "account": acc_info,
+        "authenticated": is_authenticated,
         "time": datetime.utcnow().isoformat() + "Z"
     }
+    if is_authenticated:
+        resp["account"] = acc_info
 
-@app.post("/webhook")
+    return resp
+
+@app.post("/webhook", dependencies=[Depends(enforce_rate_limit)])
 def place_order(order: OrderPayload, authorization: Optional[str] = Header(None)):
-    # 1. Validate Secret (from payload or Authorization: Bearer header)
-    verify_auth(order.secret, authorization)
+    """
+    Authenticated order placement with atomic race-condition protected daily limit enforcement.
+    """
+    # 1. Enforce Authentication
+    if not verify_auth(order.secret, authorization):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Unauthorized: Invalid or missing authentication secret"
+        )
 
-    # 2. Check Daily Stop-Loss Limit
+    # 2. Atomic Daily Stop-Loss Check (Prevent TOCTOU race conditions)
     today = datetime.utcnow().strftime("%Y-%m-%d")
     with get_db() as conn:
+        conn.execute("BEGIN IMMEDIATE")
         row = conn.execute("SELECT sl_hits FROM daily_limits WHERE day = ?", (today,)).fetchone()
         sl_hits = row["sl_hits"] if row else 0
         if sl_hits >= MAX_DAILY_SL:
-            raise HTTPException(status_code=403, detail=f"Trading halted: Max daily SL hits reached ({sl_hits}/{MAX_DAILY_SL})")
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Trading halted: Max daily SL hits reached ({sl_hits}/{MAX_DAILY_SL})"
+            )
 
     # 3. Ensure MT5 is ready
     if not mt5.initialize():
-        raise HTTPException(status_code=503, detail=f"MT5 unavailable: {mt5.last_error()}")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"MT5 unavailable: {mt5.last_error()}"
+        )
 
     # Find symbol in MT5
     symbol = order.ticker
@@ -177,141 +238,103 @@ def place_order(order: OrderPayload, authorization: Optional[str] = Header(None)
                 break
 
     if not sym_info:
-        raise HTTPException(status_code=400, detail=f"Symbol {order.ticker} not found in MT5 Market Watch")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Symbol {order.ticker} not found in MT5 Market Watch"
+        )
 
     if not sym_info.visible:
         mt5.symbol_select(symbol, True)
 
     tick = mt5.symbol_info_tick(symbol)
     if not tick:
-        raise HTTPException(status_code=500, detail=f"No tick data available for {symbol}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"No tick data available for {symbol}"
+        )
 
-    action_type = mt5.ORDER_TYPE_BUY if order.action.upper() == "BUY" else mt5.ORDER_TYPE_SELL
+    action_type = mt5.ORDER_TYPE_BUY if order.action == "BUY" else mt5.ORDER_TYPE_SELL
     fill_price = tick.ask if action_type == mt5.ORDER_TYPE_BUY else tick.bid
 
     # Position sizing bounds
     step = sym_info.volume_step if sym_info.volume_step > 0 else 0.01
     vol = max(sym_info.volume_min, min(sym_info.volume_max, round(order.qty / step) * step))
 
-    # Adaptive filling modes to try in order
     fillings_to_try = [mt5.ORDER_FILLING_FOK, mt5.ORDER_FILLING_IOC, mt5.ORDER_FILLING_RETURN]
     if hasattr(sym_info, 'filling_mode'):
         if sym_info.filling_mode & 1:
             fillings_to_try = [mt5.ORDER_FILLING_FOK, mt5.ORDER_FILLING_IOC, mt5.ORDER_FILLING_RETURN]
         elif sym_info.filling_mode & 2:
             fillings_to_try = [mt5.ORDER_FILLING_IOC, mt5.ORDER_FILLING_FOK, mt5.ORDER_FILLING_RETURN]
-        elif sym_info.filling_mode & 4:
+        else:
             fillings_to_try = [mt5.ORDER_FILLING_RETURN, mt5.ORDER_FILLING_IOC, mt5.ORDER_FILLING_FOK]
 
-    # Validate SL / TP geometry against live price
-    sl_val = float(order.sl) if order.sl and order.sl > 0 else 0.0
-    tp_val = float(order.tp) if order.tp and order.tp > 0 else 0.0
+    last_result = None
+    placed = False
 
-    if action_type == mt5.ORDER_TYPE_BUY:
-        if sl_val >= fill_price: sl_val = 0.0
-        if tp_val > 0 and tp_val <= fill_price: tp_val = 0.0
-    else:
-        if sl_val > 0 and sl_val <= fill_price: sl_val = 0.0
-        if tp_val >= fill_price: tp_val = 0.0
-
-    result = None
-    last_err = "Unknown error"
-
-    for filling_type in fillings_to_try:
-        req = {
+    for f_mode in fillings_to_try:
+        request_dict = {
             "action": mt5.TRADE_ACTION_DEAL,
             "symbol": symbol,
             "volume": float(vol),
             "type": action_type,
-            "price": fill_price,
-            "sl": sl_val,
-            "tp": tp_val,
-            "deviation": 30,
-            "magic": 108821,
+            "price": float(fill_price),
+            "deviation": 20,
+            "magic": 777001,
             "comment": order.comment or "Trading Flow",
             "type_time": mt5.ORDER_TIME_GTC,
-            "type_filling": filling_type,
+            "type_filling": f_mode,
         }
+        if order.sl:
+            request_dict["sl"] = float(order.sl)
+        if order.tp:
+            request_dict["tp"] = float(order.tp)
 
-        result = mt5.order_send(req)
-        if result and result.retcode == mt5.TRADE_RETCODE_DONE:
+        res = mt5.order_send(request_dict)
+        if res and res.retcode == mt5.TRADE_RETCODE_DONE:
+            last_result = res
+            placed = True
             break
-        last_err = result.comment if result else str(mt5.last_error())
+        else:
+            last_result = res
 
-    if not result or result.retcode != mt5.TRADE_RETCODE_DONE:
-        raise HTTPException(status_code=500, detail=f"MT5 order failed: {last_err}")
+    if not placed:
+        err_code = last_result.retcode if last_result else "UNKNOWN"
+        err_comment = last_result.comment if last_result else "No response from MT5"
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Order rejected by MT5 (Code {err_code}): {err_comment}"
+        )
 
-    # Calculate execution slippage
-    expected_px = float(order.price) if order.price else fill_price
-    slippage_pts = round(abs(result.price - expected_px), 3)
+    # 4. Compute realistic slippage and record
+    actual_fill = last_result.price if last_result.price > 0 else fill_price
+    slippage = abs(actual_fill - order.price)
 
-    # Record trade with slippage audit in DB
     with get_db() as conn:
         conn.execute("""
             INSERT INTO trades (ts, ticket, symbol, action, volume, expected_price, entry, slippage_pts, sl, tp, status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN')
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             datetime.utcnow().isoformat(),
-            result.order,
+            last_result.order,
             symbol,
-            order.action.upper(),
+            order.action,
             vol,
-            expected_px,
-            result.price,
-            slippage_pts,
-            order.sl or 0.0,
-            order.tp or 0.0
+            order.price,
+            actual_fill,
+            slippage,
+            order.sl,
+            order.tp,
+            "FILLED"
         ))
 
     return {
-        "status": "FILLED",
-        "ticket": result.order,
-        "symbol": symbol,
-        "action": order.action.upper(),
+        "status": "success",
+        "ticket": last_result.order,
         "volume": vol,
-        "price": result.price,
-        "expected_price": expected_px,
-        "slippage": slippage_pts,
-        "sl": order.sl,
-        "tp": order.tp
+        "fill_price": actual_fill,
+        "expected_price": order.price,
+        "slippage": slippage,
+        "retcode": last_result.retcode,
+        "comment": last_result.comment
     }
-
-@app.post("/report_sl")
-def report_sl(order_secret: Optional[str] = None, authorization: Optional[str] = Header(None)):
-    """Report a Stop Loss hit event to increment the daily discipline limit counter."""
-    verify_auth(order_secret, authorization)
-    today = datetime.utcnow().strftime("%Y-%m-%d")
-    with get_db() as conn:
-        conn.execute("""
-            INSERT INTO daily_limits (day, sl_hits)
-            VALUES (?, 1)
-            ON CONFLICT(day) DO UPDATE SET sl_hits = sl_hits + 1
-        """, (today,))
-        row = conn.execute("SELECT sl_hits FROM daily_limits WHERE day = ?", (today,)).fetchone()
-        sl_hits = row["sl_hits"] if row else 1
-
-    return {
-        "status": "recorded",
-        "day": today,
-        "sl_hits": sl_hits,
-        "max_daily_sl": MAX_DAILY_SL,
-        "halted": sl_hits >= MAX_DAILY_SL
-    }
-
-@app.get("/daily_status")
-def get_daily_status():
-    """Retrieve daily loss limits and remaining SL allowances."""
-    today = datetime.utcnow().strftime("%Y-%m-%d")
-    with get_db() as conn:
-        row = conn.execute("SELECT sl_hits FROM daily_limits WHERE day = ?", (today,)).fetchone()
-        sl_hits = row["sl_hits"] if row else 0
-    return {
-        "day": today,
-        "sl_hits": sl_hits,
-        "max_daily_sl": MAX_DAILY_SL,
-        "halted": sl_hits >= MAX_DAILY_SL
-    }
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { EngineConfig, EngineState } from "../engine/types";
 import { fmtClock, fmtP, SUPPORTED_SYMBOLS } from "../engine/types";
+import { secureRandomId } from "../utils/crypto";
 import PineScriptModal from "./PineScriptModal";
 
 const N = 110;
@@ -53,7 +54,7 @@ export default function CandleChart({
     if (cfg.chartView !== "tradingview" || !tvContainerRef.current) return;
 
     tvContainerRef.current.innerHTML = "";
-    const containerId = "tv_chart_container_" + Math.random().toString(36).substring(7);
+    const containerId = secureRandomId("tv_chart_container");
     const div = document.createElement("div");
     div.id = containerId;
     div.style.height = "100%";

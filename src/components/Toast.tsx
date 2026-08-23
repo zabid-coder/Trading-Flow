@@ -25,11 +25,13 @@ export function useToast() {
   return ctx;
 }
 
+import { secureRandomId } from "../utils/crypto";
+
 export function ToastProvider({ children }: { children: React.ReactNode }) {
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
 
   const addToast = useCallback((toast: Omit<ToastMessage, "id" | "timestamp">) => {
-    const id = "toast_" + Math.random().toString(36).slice(2, 9);
+    const id = secureRandomId("toast");
     const newToast: ToastMessage = {
       ...toast,
       id,

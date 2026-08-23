@@ -558,10 +558,22 @@ function enqueueSignal(
 }
 
 export function decideQueue(st: EngineState, cfg: EngineConfig, id: number, approve: boolean) {
+  if (typeof id !== "number" || id <= 0 || !Number.isFinite(id)) return;
   const q = st.queue.find((x) => x.id === id);
   if (!q || q.status !== "PENDING") return;
   const idx = st.bars.length - 1;
+  if (idx < 0 || !st.bars[idx]) return;
+
   const bar = st.bars[idx];
+
+  // Expiration check: signal cannot be approved if older than 6 bars
+  if (idx - q.entryIndex > 6) {
+    q.status = "REJECTED";
+    q.reason = "EXPIRED";
+    ev(st, bar.t, "DECIDE", "sys", `Signal #${id} expired before execution decision.`);
+    return;
+  }
+
   if (approve) {
     if (st.open) {
       ev(st, bar.t, "DECIDE", "sys", `Approval ignored — a position is already open.`);

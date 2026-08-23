@@ -14,6 +14,7 @@ import {
 import { connectLiveFeed, fetchHistoricalBars, getSymbolMeta } from "./engine/liveFeed";
 import { dispatchTradeOrder, loadBrokerConfig, saveBrokerConfig } from "./engine/brokerDispatch";
 import { initAutoprune, saveJournalTrades, saveTradeToJournal } from "./engine/storage";
+import { secureRandomInt } from "./utils/crypto";
 import {
   playBeSound,
   playOrderFilledSound,
@@ -62,7 +63,7 @@ function TerminalContent() {
   const [dashboardView, setDashboardView] = useState<DashboardView>("dashboard");
 
   const [stRef] = useState(() => ({
-    current: createEngine(48271 + Math.floor(Math.random() * 900000), DEFAULT_CFG),
+    current: createEngine(secureRandomInt(10000, 999999), DEFAULT_CFG),
   }));
 
   const [tick, setTick] = useState(0);
@@ -246,20 +247,34 @@ function TerminalContent() {
         type: "success",
       });
 
-      if (brokerCfgRef.current.mt5Connected) {
-        dispatchTradeOrder(
-          {
-            symbol: cfgRef.current.activeSymbol,
-            side: item.side,
-            lots: item.oz,
-            entry: item.entry,
-            sl: item.sl,
-            tp: item.tp,
-            magic: 777001,
-            comment: `Trading Flow: ${item.setup}`,
-          },
-          brokerCfgRef.current
-        );
+      if (brokerCfgRef.current.mt5Enabled || brokerCfgRef.current.telegramEnabled || brokerCfgRef.current.webhookEnabled) {
+        try {
+          const res = await dispatchTradeOrder(
+            item,
+            cfgRef.current.activeSymbol,
+            brokerCfgRef.current
+          );
+          if (res.success) {
+            addToast({
+              title: "Broker Dispatch Success",
+              description: res.message,
+              type: "success",
+            });
+          } else {
+            addToast({
+              title: "Broker Dispatch Warning",
+              description: res.message,
+              type: "error",
+            });
+          }
+        } catch (err: unknown) {
+          console.error("Broker dispatch exception:", err);
+          addToast({
+            title: "Broker Dispatch Failed",
+            description: err instanceof Error ? err.message : "Failed to communicate with broker",
+            type: "error",
+          });
+        }
       }
     } else {
       addToast({
@@ -376,7 +391,7 @@ function TerminalContent() {
 
   const newScenario = () => {
     if (cfg.feedMode === "simulated") {
-      stRef.current = createEngine(1 + Math.floor(Math.random() * 1e9), cfgRef.current);
+      stRef.current = createEngine(secureRandomInt(1, 1e9), cfgRef.current);
       setTick((t) => t + 1);
     }
   };
@@ -384,7 +399,7 @@ function TerminalContent() {
   const toggleLiveMode = () => {
     const nextMode = cfg.feedMode === "live" ? "simulated" : "live";
     if (nextMode === "simulated") {
-      stRef.current = createEngine(48271 + Math.floor(Math.random() * 900000), {
+      stRef.current = createEngine(secureRandomInt(10000, 999999), {
         ...cfgRef.current,
         feedMode: "simulated",
       });
@@ -397,7 +412,7 @@ function TerminalContent() {
     const meta = getSymbolMeta(sym);
     patchCfg({ activeSymbol: sym, pointValue: meta.pointValue, spread: meta.spread });
     if (cfg.feedMode === "simulated") {
-      stRef.current = createEngine(1 + Math.floor(Math.random() * 1e9), {
+      stRef.current = createEngine(secureRandomInt(1, 1e9), {
         ...cfgRef.current,
         activeSymbol: sym,
         pointValue: meta.pointValue,
@@ -410,7 +425,7 @@ function TerminalContent() {
   const selectTimeframe = (tf: Timeframe) => {
     patchCfg({ timeframe: tf });
     if (cfg.feedMode === "simulated") {
-      stRef.current = createEngine(1 + Math.floor(Math.random() * 1e9), {
+      stRef.current = createEngine(secureRandomInt(1, 1e9), {
         ...cfgRef.current,
         timeframe: tf,
       });
