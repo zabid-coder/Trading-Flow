@@ -289,6 +289,18 @@ function TerminalContent() {
     setTick((t) => t + 1);
   };
 
+  const toggleAutoMode = () => {
+    const willBeAuto = cfg.actionCenter; // switching from manual (actionCenter=true) to auto (actionCenter=false)
+    patchCfg({ actionCenter: !cfg.actionCenter });
+    addToast({
+      title: willBeAuto ? "⚡ Auto-Pilot Engaged" : "🎯 Manual Mode Active",
+      description: willBeAuto
+        ? "Autonomous Execution ON: Verified algorithmic signals will be dispatched immediately without manual confirmation."
+        : "Supervised Execution ON: Signals will be held in the Action Center for discretionary review before execution.",
+      type: willBeAuto ? "success" : "info",
+    });
+  };
+
   const closeOpenPosition = () => {
     const s = stRef.current;
     if (!s || !s.open) return;
@@ -524,6 +536,7 @@ function TerminalContent() {
             setUniversalOrderSide(side);
             setUniversalOrderOpen(true);
           }}
+          onToggleAutoMode={toggleAutoMode}
           tick={tick}
         />
 
@@ -628,6 +641,7 @@ function TerminalContent() {
                 onScaleOut={handlePartialClose}
                 onDecide={onDecide}
                 onOpenSettings={() => setBrokerModalOpen(true)}
+                onToggleAutoMode={toggleAutoMode}
               />
             </div>
           )}

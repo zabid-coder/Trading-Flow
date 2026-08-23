@@ -24,8 +24,9 @@ interface Props {
   onClosePosition: () => void;
   onMoveToBreakeven: () => void;
   onScaleOut: (ratio?: number) => void;
-  onDecide: (id: number, approved: boolean) => void;
+    onDecide: (id: number, approved: boolean) => void;
   onOpenSettings: () => void;
+  onToggleAutoMode?: () => void;
 }
 
 export const DashboardLayout: React.FC<Props> = ({
@@ -38,10 +39,12 @@ export const DashboardLayout: React.FC<Props> = ({
   onScaleOut,
   onDecide,
   onOpenSettings,
+  onToggleAutoMode,
 }) => {
   const currentEquity = st.equity?.length ? st.equity[st.equity.length - 1] : st.balance;
   const netPnl = stats.netPnl || 0;
   const isConnected = st.liveStatus === 'connected' || st.feedMode === 'simulated';
+  const isAutoMode = !cfg.actionCenter;
 
   // Profit Rain Confetti Effect when TP is achieved
   useEffect(() => {
@@ -63,7 +66,7 @@ export const DashboardLayout: React.FC<Props> = ({
   return (
     <div className="flex flex-col min-h-screen bg-[#050505] text-[#e5e5e5] font-sans antialiased selection:bg-[#f59e0b]/30 selection:text-[#fcd34d]">
       {/* 1. GLOBAL TOP HEADER */}
-      <header className="sticky top-0 z-50 flex items-center justify-between px-4 md:px-6 py-2.5 border-b border-white/5 bg-[#080808]/95 backdrop-blur-xl">
+      <header className="sticky top-0 z-50 flex flex-wrap items-center justify-between px-4 md:px-6 py-2.5 border-b border-white/5 bg-[#080808]/95 backdrop-blur-xl gap-3">
         {/* Left: Animated Logo & Brand Badge */}
         <div className="flex items-center gap-3">
           <div className="relative flex items-center justify-center w-8 h-8 rounded-lg bg-gradient-to-br from-[#fcd34d] via-[#f59e0b] to-[#b45309] shadow-lg shadow-[#f59e0b]/20">
@@ -85,8 +88,37 @@ export const DashboardLayout: React.FC<Props> = ({
           </div>
         </div>
 
-        {/* Right: Account Balance & Live Connection Telemetry */}
-        <div className="flex items-center gap-3 md:gap-4 font-mono">
+        {/* Center/Right Controls: Global AUTO vs MANUAL Mode Switch + Telemetry */}
+        <div className="flex flex-wrap items-center gap-3 md:gap-4 font-mono">
+          {/* GLOBAL EXECUTION MODE: AUTO vs MANUAL */}
+          <div className="flex items-center rounded-xl border border-white/10 p-1 bg-[#101010] shadow-inner">
+            <button
+              onClick={onToggleAutoMode}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-extrabold transition-all duration-200 cursor-pointer ${
+                isAutoMode
+                  ? 'bg-gradient-to-r from-emerald-600 to-emerald-500 text-black shadow-lg shadow-emerald-900/50 border border-emerald-400/60 font-black'
+                  : 'text-slate-500 hover:text-slate-300'
+              }`}
+              title="Auto Mode: Signals execute automatically without confirmation"
+            >
+              <span className={`w-2 h-2 rounded-full ${isAutoMode ? 'bg-black animate-ping' : 'bg-slate-700'}`} />
+              <span>⚡ AUTO PILOT</span>
+            </button>
+
+            <button
+              onClick={onToggleAutoMode}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-extrabold transition-all duration-200 cursor-pointer ${
+                !isAutoMode
+                  ? 'bg-gradient-to-r from-blue-600 to-blue-500 text-white shadow-lg shadow-blue-900/50 border border-blue-400/60 font-black'
+                  : 'text-slate-500 hover:text-slate-300'
+              }`}
+              title="Manual Mode: Signals held in Action Center for discretionary approval"
+            >
+              <span className={`w-2 h-2 rounded-full ${!isAutoMode ? 'bg-white' : 'bg-slate-700'}`} />
+              <span>🎯 MANUAL</span>
+            </button>
+          </div>
+
           {/* Connection Status Pill */}
           <div
             className={`hidden sm:flex items-center gap-2 px-3 py-1 rounded-full text-xs font-semibold border ${
@@ -127,7 +159,7 @@ export const DashboardLayout: React.FC<Props> = ({
           {/* Settings Trigger */}
           <button
             onClick={onOpenSettings}
-            className="p-2 rounded-lg bg-[#141414] hover:bg-[#222] border border-white/5 text-slate-300 transition-colors"
+            className="p-2 rounded-lg bg-[#141414] hover:bg-[#222] border border-white/5 text-slate-300 transition-colors cursor-pointer"
             title="Broker & Risk Settings"
           >
             <Settings size={16} />

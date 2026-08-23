@@ -25,6 +25,7 @@ interface Props {
   onOpenBrokerSettings: () => void;
   onOpenGuide: () => void;
   onOpenQuickOrder?: (side: "LONG" | "SHORT") => void;
+  onToggleAutoMode?: () => void;
   tick: number;
 }
 
@@ -44,6 +45,7 @@ export default function HeaderBar({
   onOpenBrokerSettings,
   onOpenGuide,
   onOpenQuickOrder,
+  onToggleAutoMode,
   tick,
 }: Props) {
   const last = st.bars[st.bars.length - 1] || { t: Date.now(), o: 2750, h: 2750, l: 2750, c: 2750, v: 0, day: 0 };
@@ -194,11 +196,37 @@ export default function HeaderBar({
 
       {/* 3. Right: Feed Mode, Chart View, Simulator Controls & Settings */}
       <div className="flex items-center gap-2">
+        {/* Global Auto-Pilot vs Manual Execution Switch */}
+        <div className="flex items-center rounded-lg border border-white/10 p-0.5 bg-[#090d16]">
+          <button
+            onClick={onToggleAutoMode}
+            className={`flex items-center gap-1 px-2.5 py-1 rounded text-[10px] font-extrabold transition-all cursor-pointer ${
+              !cfg.actionCenter
+                ? "bg-[var(--long)] text-black font-black shadow"
+                : "text-[var(--dim)] hover:text-white"
+            }`}
+            title="Auto-Pilot: Algorithmic signals execute directly to broker"
+          >
+            <span>⚡ AUTO</span>
+          </button>
+          <button
+            onClick={onToggleAutoMode}
+            className={`flex items-center gap-1 px-2.5 py-1 rounded text-[10px] font-extrabold transition-all cursor-pointer ${
+              cfg.actionCenter
+                ? "bg-blue-600 text-white font-black shadow"
+                : "text-[var(--dim)] hover:text-white"
+            }`}
+            title="Manual: Signals held in Action Center for approval"
+          >
+            <span>🎯 MANUAL</span>
+          </button>
+        </div>
+
         {/* Feed Mode Switch (LIVE vs SIM) */}
         <div className="flex items-center rounded-lg border border-white/10 p-0.5 bg-[#090d16]">
           <button
             onClick={onToggleLiveMode}
-            className={`px-2.5 py-1 rounded text-[10px] font-bold transition-all ${
+            className={`px-2.5 py-1 rounded text-[10px] font-bold transition-all cursor-pointer ${
               !isLive ? "bg-[var(--gold)] text-black font-extrabold shadow" : "text-[var(--dim)] hover:text-white"
             }`}
           >
@@ -206,7 +234,7 @@ export default function HeaderBar({
           </button>
           <button
             onClick={onToggleLiveMode}
-            className={`flex items-center gap-1.5 px-2.5 py-1 rounded text-[10px] font-bold transition-all ${
+            className={`flex items-center gap-1.5 px-2.5 py-1 rounded text-[10px] font-bold transition-all cursor-pointer ${
               isLive ? "bg-[var(--long)] text-black font-extrabold shadow animate-pulse" : "text-[var(--dim)] hover:text-white"
             }`}
           >

@@ -535,6 +535,12 @@ export default function ConsolePanel({ cfg, onCfg, onAoi, st, stats }: Props) {
               {/* Automation Toggles */}
               <div className="space-y-1 pt-1">
                 <Toggle
+                  label="AUTO-PILOT EXECUTION (ALGO MODE)"
+                  desc="When ON, signals dispatch directly to broker. When OFF, signals hold for manual approval."
+                  on={!cfg.actionCenter}
+                  onChange={() => onCfg({ actionCenter: !cfg.actionCenter })}
+                />
+                <Toggle
                   label="AUTO BREAKEVEN"
                   desc="Locks stop to entry once trade reaches +1.0R"
                   on={cfg.autoBreakeven}
