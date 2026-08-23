@@ -658,13 +658,59 @@ function clsLabel(c: CandleClass) {
 function evaluate(st: EngineState, cfg: EngineConfig, bar: Bar, cls: CandleClass) {
   const atr = st.atr;
   const idx = st.bars.length - 1;
+  const n = st.bars.length;
   const act = st.aois.filter((a) => a.active);
   const warm = st.bars.length <= 60;
+
+  // 1. Dynamic Market Regime Detection Engine (8 States)
+  if (n >= 20) {
+    const avgVol = st.bars.slice(n - 20).reduce((acc, b) => acc + (b.v || 1), 0) / 20;
+    const isNews = (bar.v || 1) >= 5.0 * avgVol;
+
+    if (isNews) {
+      st.regime = "NEWS_SPIKE";
+    } else if (n >= 12) {
+      const p10H = Math.max(...st.bars.slice(n - 11, n - 1).map((b) => b.h));
+      const p10L = Math.min(...st.bars.slice(n - 11, n - 1).map((b) => b.l));
+      const body = Math.abs(bar.c - bar.o);
+      const lowerWick = Math.min(bar.o, bar.c) - bar.l;
+      const upperWick = bar.h - Math.max(bar.o, bar.c);
+
+      if ((bar.l < p10L && bar.c > p10L && lowerWick > body * 1.35) || (bar.h > p10H && bar.c < p10H && upperWick > body * 1.35)) {
+        st.regime = "LIQUIDITY_GRAB";
+      } else if (st.ema50 > st.ema200 && bar.c > st.ema50) {
+        st.regime = "STRONG_BULL";
+      } else if (st.ema50 < st.ema200 && bar.c < st.ema50) {
+        st.regime = "STRONG_BEAR";
+      } else if (bar.c > st.ema50) {
+        st.regime = "WEAK_BULL";
+      } else if (bar.c < st.ema50) {
+        st.regime = "WEAK_BEAR";
+      } else {
+        st.regime = "RANGING";
+      }
+    }
+  }
 
   const setEval = (checks: CheckStep[], verdict: string) => {
     st.lastEval = { cls, checks, verdict };
   };
   const riskIdle = `flat · sizing $${cfg.riskUSD} ÷ stop distance`;
+
+  // Friday Profit-Taking Risk Guard (No new entries after Friday 14:00 UTC)
+  const dt = new Date(bar.t);
+  if (dt.getUTCDay() === 5 && dt.getUTCHours() >= 14) {
+    setEval(
+      [
+        { k: "FRIDAY GUARD", ok: false, v: `${dt.getUTCHours()}:00 UTC (Active)` },
+        { k: "REGIME", ok: true, v: st.regime },
+        { k: "GATE", ok: false, v: "weekend risk lock" },
+        { k: "RISK", ok: null, v: "capital protected" },
+      ],
+      "Friday profit-taking window active (14:00+ UTC). Smart money is closing weekly books — new entries locked to prevent weekend gap whipsaws."
+    );
+    return;
+  }
 
   // swept levels: price hunted through and closed back inside
   const swept: { a: Aoi; side: "LONG" | "SHORT"; dist: number }[] = [];
