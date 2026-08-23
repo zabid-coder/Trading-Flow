@@ -236,41 +236,41 @@ export const Dashboard: React.FC<Props> = ({
                 <AreaChart data={equityData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
                   <defs>
                     <linearGradient id="colorEquity" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor="#10b981" stopOpacity={0.35} />
-                      <stop offset="95%" stopColor="#10b981" stopOpacity={0.0} />
+                      <stop offset="5%" stopColor={netPnL >= 0 ? "#10b981" : "#f43f5e"} stopOpacity={0.35} />
+                      <stop offset="95%" stopColor={netPnL >= 0 ? "#10b981" : "#f43f5e"} stopOpacity={0.0} />
                     </linearGradient>
                   </defs>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#334155" vertical={false} />
+                  <CartesianGrid strokeDasharray="3 3" stroke="#1f293d" vertical={false} />
                   <XAxis
                     dataKey="time"
                     stroke="#64748b"
-                    fontSize={11}
+                    fontSize={10}
                     tickLine={false}
                     axisLine={false}
                   />
                   <YAxis
                     stroke="#64748b"
-                    fontSize={11}
+                    fontSize={10}
                     tickLine={false}
                     axisLine={false}
-                    domain={['auto', 'auto']}
-                    tickFormatter={(v) => `$${v}`}
+                    domain={['dataMin - 15', 'dataMax + 15']}
+                    tickFormatter={(v) => `$${Math.round(v)}`}
                   />
                   <Tooltip
                     contentStyle={{
-                      backgroundColor: '#1e293b',
-                      borderColor: '#334155',
+                      backgroundColor: '#0c121e',
+                      borderColor: '#1e293b',
                       color: '#f8fafc',
                       borderRadius: '8px',
                       fontSize: '12px',
                     }}
-                    itemStyle={{ color: '#10b981', fontWeight: 'bold' }}
+                    itemStyle={{ color: netPnL >= 0 ? '#10b981' : '#f43f5e', fontWeight: 'bold' }}
                     formatter={(value: any) => [`$${Number(value).toLocaleString()}`, 'Equity']}
                   />
                   <Area
                     type="monotone"
                     dataKey="equity"
-                    stroke="#10b981"
+                    stroke={netPnL >= 0 ? '#10b981' : '#f43f5e'}
                     strokeWidth={2.5}
                     fillOpacity={1}
                     fill="url(#colorEquity)"
