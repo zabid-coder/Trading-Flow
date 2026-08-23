@@ -467,6 +467,13 @@ export interface EngineConfig {
   trendFilter: boolean; // 50/200 EMA trend regime filter
   killzoneFilter: boolean; // London & NY killzone session filter
   confluenceGate: number; // minimum confluence score out of 100 (default 75)
+  // Range Breakout EA Configs
+  rbEnabled: boolean;
+  rbStartH: number;
+  rbStartM: number;
+  rbEndH: number;
+  rbEndM: number;
+  rbBufferPoints: number;
 }
 
 export interface SessionLevels {
@@ -526,6 +533,11 @@ export interface EngineState {
   ema200: number;
   lastConfluenceScore: number;
   activeKillzone: "LONDON" | "NEW_YORK" | "OVERLAP" | "OFF_SESSION";
+  
+  // Range Breakout State
+  rbHigh: number | null;
+  rbLow: number | null;
+  rbState: "WAITING" | "FORMING" | "ACTIVE" | "DONE";
 }
 
 export const fmtP = (x: number, digits: number = 2) => x.toFixed(digits);

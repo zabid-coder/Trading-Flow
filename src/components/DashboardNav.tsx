@@ -40,8 +40,8 @@ export default function DashboardNav({
     },
     {
       id: "risk",
-      label: "RISK & PORTFOLIO",
-      icon: "🛡️",
+      label: "TB DASHBOARD",
+      icon: "📈",
     },
   ];
 

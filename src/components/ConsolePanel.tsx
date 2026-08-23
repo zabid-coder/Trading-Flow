@@ -517,11 +517,38 @@ export default function ConsolePanel({ cfg, onCfg, onAoi, st, stats }: Props) {
                   onChange={() => onCfg({ autoBreakeven: !cfg.autoBreakeven })}
                 />
                 <Toggle
-                  label="DYNAMIC ATR TRAILING STOP"
-                  desc="Trails stop behind price past +1.5R at 1.0x ATR"
-                  on={cfg.trailingStop}
-                  onChange={() => onCfg({ trailingStop: !cfg.trailingStop })}
+                  label="RSI EXHAUSTION"
+                  desc="Fades extreme momentum into S/R"
+                  on={cfg.enabledStrategies.rsi_exhaustion}
+                  onChange={() =>
+                    onCfg({
+                      enabledStrategies: { ...cfg.enabledStrategies, rsi_exhaustion: !cfg.enabledStrategies.rsi_exhaustion },
+                    })
+                  }
                 />
+              </div>
+
+              {/* Range Breakout specific section */}
+              <div className="pt-2 border-t border-white/10 mt-2">
+                 <Toggle
+                   label="RANGE BREAKOUT EA"
+                   desc="Trade breakouts of a defined time range (BM Trading Style)"
+                   on={cfg.rbEnabled ?? false}
+                   onChange={() => onCfg({ rbEnabled: !(cfg.rbEnabled ?? false) })}
+                 />
+                 {(cfg.rbEnabled ?? false) && (
+                   <div className="mt-2 space-y-2 pl-2 border-l border-[var(--gold)]">
+                     <div className="flex gap-2">
+                       <NumberInput label="START HOUR (UTC)" value={cfg.rbStartH ?? 7} step={1} min={0} max={23} onChange={(v) => onCfg({ rbStartH: v })} />
+                       <NumberInput label="START MINUTE" value={cfg.rbStartM ?? 0} step={5} min={0} max={55} onChange={(v) => onCfg({ rbStartM: v })} />
+                     </div>
+                     <div className="flex gap-2">
+                       <NumberInput label="END HOUR (UTC)" value={cfg.rbEndH ?? 10} step={1} min={0} max={23} onChange={(v) => onCfg({ rbEndH: v })} />
+                       <NumberInput label="END MINUTE" value={cfg.rbEndM ?? 0} step={5} min={0} max={55} onChange={(v) => onCfg({ rbEndM: v })} />
+                     </div>
+                     <NumberInput label="ORDER BUFFER (POINTS)" value={cfg.rbBufferPoints ?? 20} step={10} min={0} onChange={(v) => onCfg({ rbBufferPoints: v })} />
+                   </div>
+                 )}
               </div>
             </div>
           )}

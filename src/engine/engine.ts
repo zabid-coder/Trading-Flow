@@ -58,6 +58,12 @@ export const DEFAULT_CFG: EngineConfig = {
   trendFilter: true,
   killzoneFilter: true,
   confluenceGate: 75,
+  rbEnabled: false,
+  rbStartH: 7,
+  rbStartM: 0,
+  rbEndH: 10,
+  rbEndM: 0,
+  rbBufferPoints: 20, // points (like $2.00 in gold)
 };
 
 const seenZones = new WeakMap<EngineState, Set<string>>();
@@ -737,6 +743,57 @@ function evaluate(st: EngineState, cfg: EngineConfig, bar: Bar, cls: CandleClass
     return;
   }
 
+  // --- RANGE BREAKOUT EA LOGIC ---
+  if (cfg.rbEnabled && st.rbState === "ACTIVE" && st.rbHigh && st.rbLow) {
+    const buffer = cfg.rbBufferPoints * cfg.pointValue;
+    const longTrigger = st.rbHigh + buffer;
+    const shortTrigger = st.rbLow - buffer;
+    
+    // Check if price broke the triggers
+    let entered = false;
+    let rbSide: "LONG" | "SHORT" | null = null;
+    let rbEntry = 0;
+    
+    // Simulate pending orders filling during the bar
+    if (bar.h > longTrigger) { rbSide = "LONG"; rbEntry = longTrigger; }
+    else if (bar.l < shortTrigger) { rbSide = "SHORT"; rbEntry = shortTrigger; }
+    
+    if (rbSide) {
+      // Create a virtual AOI for the openTrade function
+      const a: Aoi = {
+        kind: "PDH", // Dummy
+        role: rbSide === "LONG" ? "R" : "S",
+        y1: rbEntry, y2: rbEntry, ty: rbEntry,
+        from: idx, label: "RANGE BREAKOUT", active: true
+      };
+      
+      entered = cfg.actionCenter
+        ? enqueueSignal(st, cfg, bar, rbSide, a, `RB_${rbSide}_${st.dayKey}`)
+        : openTrade(st, cfg, bar, rbSide, a, `RB_${rbSide}_${st.dayKey}`);
+        
+      if (entered) {
+        st.rbState = "DONE";
+        const t = st.open as Trade | null;
+        if (t) {
+          // Adjust SL to opposite side of range by default, or factor
+          t.sl = rbSide === "LONG" ? st.rbLow : st.rbHigh;
+          // Apply R:R
+          const dist = Math.abs(t.entry - t.sl);
+          t.tp = rbSide === "LONG" ? t.entry + (dist * cfg.rr) : t.entry - (dist * cfg.rr);
+        }
+        
+        setEval(
+          [
+            { k: "RANGE TRIGGER", ok: true, v: `Broke ${rbSide === "LONG" ? "HIGH" : "LOW"}` },
+            { k: "EXECUTION", ok: true, v: `${rbSide} @ ${fmtP(rbEntry)}` },
+          ],
+          `Range Breakout EA placed pending order which filled. State is now DONE.`
+        );
+        return;
+      }
+    }
+  }
+  // --- END RANGE BREAKOUT ---
   if (cfg.identity === "reversal") {
     /* ------- INSTITUTIONAL FILTER LAYER ------- */
 
@@ -1057,6 +1114,8 @@ export function advance(st: EngineState, cfg: EngineConfig) {
 
   // Institutional Killzone Detection (UTC hours)
   const barHour = hourOf(bar.t);
+  const barMin = Math.floor(((bar.t % DAY_MS) + DAY_MS) / 60000) % 60;
+  
   if (barHour >= 13 && barHour < 17) {
     st.activeKillzone = "NEW_YORK";
   } else if (barHour >= 12 && barHour < 13) {
@@ -1065,6 +1124,31 @@ export function advance(st: EngineState, cfg: EngineConfig) {
     st.activeKillzone = "LONDON";
   } else {
     st.activeKillzone = "OFF_SESSION";
+  }
+
+  // Range Breakout Tracker
+  if (cfg.rbEnabled) {
+    const isStart = barHour === cfg.rbStartH && barMin >= cfg.rbStartM;
+    const isEnd = barHour === cfg.rbEndH && barMin >= cfg.rbEndM;
+    
+    if (st.rbState === "WAITING" && isStart) {
+      st.rbState = "FORMING";
+      st.rbHigh = bar.h;
+      st.rbLow = bar.l;
+    }
+    
+    if (st.rbState === "FORMING") {
+      st.rbHigh = Math.max(st.rbHigh!, bar.h);
+      st.rbLow = Math.min(st.rbLow!, bar.l);
+      if (isEnd) st.rbState = "ACTIVE";
+    }
+    
+    // Reset range at end of day (or specific time)
+    if (barHour === 23 && barMin === 45) {
+      st.rbState = "WAITING";
+      st.rbHigh = null;
+      st.rbLow = null;
+    }
   }
 
   const cls = classify(bar, st.atr, cfg);
@@ -1150,6 +1234,9 @@ export function createEngine(seed: number, cfg: EngineConfig): EngineState {
     ema200: basePrice,
     lastConfluenceScore: 0,
     activeKillzone: "OFF_SESSION",
+    rbHigh: null,
+    rbLow: null,
+    rbState: "WAITING",
   };
   ev(st, BASE_T, "SYS", "sys", `Trading Flow online · ${cfg.activeSymbol} (${cfg.timeframe})`);
   ev(st, BASE_T, "SYS", "aoi", `Simulator feed synchronized to market levels`);
