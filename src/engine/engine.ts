@@ -25,8 +25,8 @@ export const DEFAULT_CFG: EngineConfig = {
     rsi_exhaustion: true,
   },
   minConfluenceCount: 2,
-  account: 10000,
-  riskUSD: 375,
+  account: 1000,
+  riskUSD: 20,
   rr: 2.0,
   maxDailySL: 2,
   rejThresh: 0.58,
@@ -442,7 +442,7 @@ function planTrade(st: EngineState, cfg: EngineConfig, bar: Bar, side: "LONG" | 
   // Dynamic Risk Sizing Calculation
   let targetRiskUSD = cfg.riskUSD;
   if (cfg.sizingMode === "percentEquity") {
-    targetRiskUSD = Math.max(25, st.balance * ((cfg.equityRiskPct || 2.0) / 100));
+    targetRiskUSD = Math.max(5, st.balance * ((cfg.equityRiskPct || 2.0) / 100));
   } else if (cfg.sizingMode === "fractionalKelly") {
     const closed = st.trades.filter((t) => !t.open);
     const wins = closed.filter((t) => (t.pnl ?? 0) > 0).length;
@@ -450,7 +450,7 @@ function planTrade(st: EngineState, cfg: EngineConfig, bar: Bar, side: "LONG" | 
     const b = Math.max(1.0, cfg.rr);
     const rawKelly = p - (1 - p) / b;
     const kellyPct = Math.max(0.005, Math.min(0.035, rawKelly * (cfg.kellyFraction || 0.35)));
-    targetRiskUSD = Math.max(25, st.balance * kellyPct);
+    targetRiskUSD = Math.max(5, st.balance * kellyPct);
   }
 
   // Sizing = targetRisk ÷ (stop distance × point value per unit) with margin safety cap
