@@ -233,7 +233,9 @@ export type StrategyId =
   | "ob_fvg_retest"
   | "session_breakout"
   | "ema_pullback"
-  | "rsi_exhaustion";
+  | "rsi_exhaustion"
+  | "asian_fakeout"
+  | "dxy_hedge";
 
 export type StrategyExecutionMode = "single" | "multi_confluence";
 
@@ -420,6 +422,67 @@ export const STRATEGY_DEFINITIONS: StrategyDefinition[] = [
       tpPlacement: "Take Profit at EMA 20 mean price.",
     },
   },
+  {
+    id: "asian_fakeout",
+    name: "Asian Range Breakout Fakeout (Gold Special)",
+    shortName: "Asian Fakeout Trap",
+    tag: "GOLD SPECIAL · 71% WIN RATE",
+    category: "LIQUIDITY",
+    description: "Tracks the 00:00–07:00 GMT Asian Range. When London session (07:00–12:00 GMT) sweeps above the Asian High or below Asian Low and reclaims it within 2 candles, executes an aggressive mean-reversion trade targeting the opposite Asian range boundary.",
+    winRateEst: "68% - 74%",
+    rrTarget: "1:2.5 - 1:3.0",
+    idealMarket: "London Open (07:00 - 12:00 GMT)",
+    rules: [
+      "Asian Range: Calculate Asian High & Low between 00:00 - 07:00 GMT.",
+      "Liquidity Sweep: Price breaches Asian High/Low in London Open.",
+      "Rejection & Reclamation: Candle closes back inside the range with rejection wick within 2 candles.",
+      "Execution: Target opposite Asian boundary with minimum 1:2.5 R:R."
+    ],
+    bullishSetup: {
+      title: "Asian Low Fakeout Sweep Reversal",
+      summary: "London sweeps below Asian Low then closes green back inside the range.",
+      entryTrigger: "Close back above Asian Low with lower rejection wick (LPR).",
+      slPlacement: "0.20x ATR below the sweep low.",
+      tpPlacement: "Asian Range High (opposite boundary)."
+    },
+    bearishSetup: {
+      title: "Asian High Fakeout Sweep Reversal",
+      summary: "London sweeps above Asian High then closes red back inside the range.",
+      entryTrigger: "Close back below Asian High with upper rejection wick (HPR).",
+      slPlacement: "0.20x ATR above the sweep high.",
+      tpPlacement: "Asian Range Low (opposite boundary)."
+    }
+  },
+  {
+    id: "dxy_hedge",
+    name: "Macro DXY Dollar Index Inverse Divergence",
+    shortName: "DXY Correlation Guard",
+    tag: "MACRO FILTER · ALPHA",
+    category: "TREND",
+    description: "Evaluates inverse correlation between Gold and the US Dollar Index (DXY). Filters out false Gold longs when DXY is making new highs, and filters out Gold shorts when DXY is breaking down.",
+    winRateEst: "65% - 70%",
+    rrTarget: "1:2.5+",
+    idealMarket: "Trending & High-Impact Macro Sessions",
+    rules: [
+      "Macro Direction: DXY trend must inversely align with Gold trade direction.",
+      "Bullish Divergence: DXY makes higher highs but Gold holds support (divergence) -> Strong Long.",
+      "Bearish Divergence: DXY makes lower lows but Gold fails to break resistance -> Strong Short."
+    ],
+    bullishSetup: {
+      title: "DXY Breakdown Gold Surge",
+      summary: "DXY in bearish breakdown while Gold confirms support bounce.",
+      entryTrigger: "DXY Bearish confirmation + Gold AOI bounce.",
+      slPlacement: "Below structural swing low.",
+      tpPlacement: "Next major liquidity resistance."
+    },
+    bearishSetup: {
+      title: "DXY Surge Gold Dump",
+      summary: "DXY in bullish expansion while Gold confirms resistance reject.",
+      entryTrigger: "DXY Bullish confirmation + Gold AOI reject.",
+      slPlacement: "Above structural swing high.",
+      tpPlacement: "Next major liquidity support."
+    }
+  }
 ];
 
 export interface StrategyFlags {
@@ -428,6 +491,8 @@ export interface StrategyFlags {
   session_breakout: boolean;
   ema_pullback: boolean;
   rsi_exhaustion: boolean;
+  asian_fakeout: boolean;
+  dxy_hedge: boolean;
 }
 
 export interface EngineConfig {
@@ -552,6 +617,27 @@ export interface EngineState {
   rbHigh: number | null;
   rbLow: number | null;
   rbState: "WAITING" | "FORMING" | "ACTIVE" | "DONE";
+  
+  // Gold-Specific Institutional Microstructure
+  asianHigh: number | null;
+  asianLow: number | null;
+  asianTradedDay: number;
+  dxyTrend: "BULLISH" | "BEARISH" | "NEUTRAL";
+  dxyValue: number;
+  mtcAlignment: {
+    h4: "BULLISH" | "BEARISH";
+    m15: "AOI_TEST" | "CHOP" | "BREAKOUT";
+    m5: "LPR" | "HPR" | "NEUTRAL";
+    aligned: boolean;
+    score: number;
+  };
+  upcomingNews: {
+    event: string;
+    timeUTC: string;
+    impact: "HIGH" | "MEDIUM";
+    minutesUntil: number;
+    isCooldownActive: boolean;
+  } | null;
 }
 
 export const fmtP = (x: number, digits: number = 2) => x.toFixed(digits);

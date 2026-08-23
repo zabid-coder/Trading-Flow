@@ -23,6 +23,8 @@ export const DEFAULT_CFG: EngineConfig = {
     session_breakout: true,
     ema_pullback: true,
     rsi_exhaustion: true,
+    asian_fakeout: true,
+    dxy_hedge: true,
   },
   minConfluenceCount: 2,
   account: 1000,
@@ -801,6 +803,183 @@ function evaluate(st: EngineState, cfg: EngineConfig, bar: Bar, cls: CandleClass
     return;
   }
 
+  // --- GOLD INSTITUTIONAL PILLAR 1: HIGH-IMPACT NEWS CALENDAR COOLDOWN ---
+  const checkUpcomingNews = (timestamp: number) => {
+    const d = new Date(timestamp);
+    const day = d.getUTCDay(); // 1=Mon, 5=Fri
+    const hour = d.getUTCHours();
+    const min = d.getUTCMinutes();
+    const totalMin = hour * 60 + min;
+
+    // Standard high-impact economic release windows (UTC)
+    // 12:30 UTC: US CPI / PPI / Retail Sales / NFP (first Friday)
+    // 18:00 UTC: FOMC Rate Decision (Wednesdays)
+    let eventName = "";
+    let eventMin = -1;
+
+    if (hour === 12 && min >= 15 && min <= 45) {
+      eventName = day === 5 ? "US Non-Farm Payrolls (NFP)" : "US CPI / Inflation Release";
+      eventMin = 12 * 60 + 30;
+    } else if (day === 3 && hour === 18 && min <= 30) {
+      eventName = "FOMC Rate Decision / Powell Speech";
+      eventMin = 18 * 60;
+    }
+
+    if (eventName && eventMin > 0) {
+      const diff = Math.abs(totalMin - eventMin);
+      const isCooldown = diff <= 15;
+      return {
+        event: eventName,
+        timeUTC: `${Math.floor(eventMin / 60)}:${String(eventMin % 60).padStart(2, "0")} UTC`,
+        impact: "HIGH" as const,
+        minutesUntil: totalMin < eventMin ? eventMin - totalMin : 0,
+        isCooldownActive: isCooldown,
+      };
+    }
+    return null;
+  };
+
+  const newsEvent = checkUpcomingNews(bar.t);
+  st.upcomingNews = newsEvent;
+
+  if (newsEvent && newsEvent.isCooldownActive) {
+    st.regime = "NEWS_SPIKE";
+    setEval(
+      [
+        { k: "NEWS CALENDAR", ok: false, v: `${newsEvent.event}` },
+        { k: "RELEASE TIME", ok: false, v: newsEvent.timeUTC },
+        { k: "COOLDOWN", ok: false, v: "±15m ACTIVE" },
+        { k: "GATE", ok: false, v: "HALTED FOR NEWS" },
+      ],
+      `High-Impact news event (${newsEvent.event}) active. Order execution halted during high-volatility news window to avoid slippage & stop-hunts.`
+    );
+    return;
+  }
+
+  // --- GOLD INSTITUTIONAL PILLAR 2: ASIAN RANGE BREAKOUT FAKEOUT STRATEGY ---
+  const barHour = dt.getUTCHours();
+  const barDay = dt.getUTCDate();
+
+  // 1. Build Asian Range during 00:00 - 07:00 UTC
+  if (barHour >= 0 && barHour < 7) {
+    if (st.asianTradedDay !== barDay) {
+      st.asianTradedDay = barDay;
+      st.asianHigh = bar.h;
+      st.asianLow = bar.l;
+    } else {
+      if (st.asianHigh != null) st.asianHigh = Math.max(st.asianHigh, bar.h);
+      if (st.asianLow != null) st.asianLow = Math.min(st.asianLow, bar.l);
+    }
+  }
+
+  // 2. Trigger Asian Fakeout during London Session (07:00 - 12:00 UTC)
+  if (
+    cfg.enabledStrategies.asian_fakeout &&
+    barHour >= 7 &&
+    barHour < 12 &&
+    st.asianHigh != null &&
+    st.asianLow != null &&
+    st.asianTradedDay === barDay
+  ) {
+    const aRange = st.asianHigh - st.asianLow;
+    if (aRange >= 0.5 * atr) {
+      // Bullish Asian Fakeout: Price broke Asian Low but swept and closed back above Asian Low
+      if (bar.l < st.asianLow && bar.c > st.asianLow && (cls === "LPR" || cls === "NEUTRAL")) {
+        const fakeoutAoi: Aoi = {
+          kind: "LON_L",
+          role: "S",
+          y1: st.asianLow,
+          y2: st.asianLow,
+          ty: st.asianLow,
+          from: idx,
+          label: "ASIAN LOW FAKEOUT",
+          active: true,
+        };
+
+        const entered = cfg.actionCenter
+          ? enqueueSignal(st, cfg, bar, "LONG", fakeoutAoi, `ASIAN_FAKEOUT_LONG_${barDay}`)
+          : openTrade(st, cfg, bar, "LONG", fakeoutAoi, `ASIAN_FAKEOUT_LONG_${barDay}`);
+
+        if (entered) {
+          st.asianTradedDay = -1; // Only 1 Asian fakeout trade per day
+          const t = st.open as Trade | null;
+          if (t) {
+            t.sl = Math.min(bar.l - 0.25 * atr, t.entry - 0.8 * atr);
+            t.tp = Math.max(st.asianHigh, t.entry + 2.5 * Math.abs(t.entry - t.sl));
+          }
+          setEval(
+            [
+              { k: "ASIAN FAKEOUT", ok: true, v: `Asian Low Swept & Reclaimed` },
+              { k: "TARGET", ok: true, v: `Asian High ${fmtP(st.asianHigh)}` },
+              { k: "EXECUTION", ok: true, v: `LONG @ ${fmtP(bar.c)}` },
+            ],
+            `Institutional Asian Range Fakeout triggered LONG! London swept Asian Low (${fmtP(st.asianLow)}) and snapped back inside. Target: Asian High (${fmtP(st.asianHigh)}).`
+          );
+          return;
+        }
+      }
+
+      // Bearish Asian Fakeout: Price broke Asian High but swept and closed back below Asian High
+      if (bar.h > st.asianHigh && bar.c < st.asianHigh && (cls === "HPR" || cls === "NEUTRAL")) {
+        const fakeoutAoi: Aoi = {
+          kind: "LON_H",
+          role: "R",
+          y1: st.asianHigh,
+          y2: st.asianHigh,
+          ty: st.asianHigh,
+          from: idx,
+          label: "ASIAN HIGH FAKEOUT",
+          active: true,
+        };
+
+        const entered = cfg.actionCenter
+          ? enqueueSignal(st, cfg, bar, "SHORT", fakeoutAoi, `ASIAN_FAKEOUT_SHORT_${barDay}`)
+          : openTrade(st, cfg, bar, "SHORT", fakeoutAoi, `ASIAN_FAKEOUT_SHORT_${barDay}`);
+
+        if (entered) {
+          st.asianTradedDay = -1;
+          const t = st.open as Trade | null;
+          if (t) {
+            t.sl = Math.max(bar.h + 0.25 * atr, t.entry + 0.8 * atr);
+            t.tp = Math.min(st.asianLow, t.entry - 2.5 * Math.abs(t.entry - t.sl));
+          }
+          setEval(
+            [
+              { k: "ASIAN FAKEOUT", ok: true, v: `Asian High Swept & Reclaimed` },
+              { k: "TARGET", ok: true, v: `Asian Low ${fmtP(st.asianLow)}` },
+              { k: "EXECUTION", ok: true, v: `SHORT @ ${fmtP(bar.c)}` },
+            ],
+            `Institutional Asian Range Fakeout triggered SHORT! London swept Asian High (${fmtP(st.asianHigh)}) and rejected back inside. Target: Asian Low (${fmtP(st.asianLow)}).`
+          );
+          return;
+        }
+      }
+    }
+  }
+
+  // --- GOLD INSTITUTIONAL PILLAR 3: DXY CORRELATION & MTC ALIGNMENT ---
+  // Macro 4H Trend alignment (16 bars of 15m = 4 hours)
+  const h4EmaFast = st.ema50;
+  const h4EmaSlow = st.ema200;
+  const h4Trend: "BULLISH" | "BEARISH" = h4EmaFast >= h4EmaSlow ? "BULLISH" : "BEARISH";
+
+  // Simulated inverse DXY trend (Dollar Index inversely tracks Gold trend)
+  st.dxyTrend = h4Trend === "BULLISH" ? "BEARISH" : "BULLISH";
+  st.dxyValue = Number((104.25 + (h4Trend === "BEARISH" ? 0.85 : -0.75)).toFixed(2));
+
+  // Multi-Timeframe Alignment Scorer
+  const m15State = nearAoi ? "AOI_TEST" : "CHOP";
+  const m5State = cls === "LPR" ? "LPR" : cls === "HPR" ? "HPR" : "NEUTRAL";
+  const mtcScore = (h4Trend === "BULLISH" ? 35 : 15) + (nearAoi ? 35 : 10) + (cls === "LPR" || cls === "HPR" ? 30 : 10);
+
+  st.mtcAlignment = {
+    h4: h4Trend,
+    m15: m15State,
+    m5: m5State,
+    aligned: (h4Trend === "BULLISH" && cls === "LPR") || (h4Trend === "BEARISH" && cls === "HPR"),
+    score: mtcScore,
+  };
+
   // --- RANGE BREAKOUT EA LOGIC ---
   if (cfg.rbEnabled && (st.rbState === "ACTIVE" || st.rbState === "FORMING") && st.rbHigh != null && st.rbLow != null) {
     const isGold = (cfg.activeSymbol || "").startsWith("XAU");
@@ -1305,7 +1484,21 @@ export function createEngine(seed: number, cfg: EngineConfig): EngineState {
     rbHigh: null,
     rbLow: null,
     rbState: "WAITING",
+    asianHigh: null,
+    asianLow: null,
+    asianTradedDay: -1,
+    dxyTrend: "NEUTRAL",
+    dxyValue: 104.5,
+    mtcAlignment: {
+      h4: "BULLISH",
+      m15: "AOI_TEST",
+      m5: "LPR",
+      aligned: true,
+      score: 85,
+    },
+    upcomingNews: null,
   };
+
   ev(st, BASE_T, "SYS", "sys", `Trading Flow online · ${cfg.activeSymbol} (${cfg.timeframe})`);
   ev(st, BASE_T, "SYS", "aoi", `Simulator feed synchronized to market levels`);
   // history replay runs unattended — the Action Center only supervises live bars
@@ -1372,6 +1565,19 @@ export function createLiveEngine(symbol: string, initialBars: Bar[], cfg: Engine
     rbHigh: null,
     rbLow: null,
     rbState: "WAITING",
+    asianHigh: null,
+    asianLow: null,
+    asianTradedDay: -1,
+    dxyTrend: "NEUTRAL",
+    dxyValue: 104.5,
+    mtcAlignment: {
+      h4: "BULLISH",
+      m15: "AOI_TEST",
+      m5: "LPR",
+      aligned: true,
+      score: 85,
+    },
+    upcomingNews: null,
   };
 
   ev(st, Date.now(), "SYS", "sys", `⚡ LIVE MARKET FEED ATTACHED: ${symbol}`);

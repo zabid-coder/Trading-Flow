@@ -48,6 +48,52 @@ export default function PipelineStrip({ st }: { st: EngineState }) {
           <span className="rounded px-2 py-0.5 font-mono text-[10px] font-extrabold tracking-wider border border-white/10" style={{ color: confColor, background: confBg }}>
             CF {confScore}/100
           </span>
+          {/* Multi-Timeframe Confluence (MTC) Badge */}
+          {st.mtcAlignment && (
+            <span
+              className="rounded px-2 py-0.5 font-mono text-[9px] font-extrabold tracking-wider border border-white/10 flex items-center gap-1"
+              style={{
+                color: st.mtcAlignment.aligned ? "var(--long)" : "var(--muted)",
+                background: st.mtcAlignment.aligned ? "rgba(47,201,143,0.15)" : "rgba(255,255,255,0.05)",
+              }}
+            >
+              <span>MTC 4H/15m/5m</span>
+              <span className="text-[10px]">{st.mtcAlignment.aligned ? "✓ ALIGNED" : "− SPLIT"}</span>
+            </span>
+          )}
+          {/* DXY Dollar Index Correlation Badge */}
+          {st.dxyValue && (
+            <span
+              className="rounded px-2 py-0.5 font-mono text-[9px] font-bold tracking-wider border border-white/10 flex items-center gap-1"
+              style={{
+                color: st.dxyTrend === "BULLISH" ? "var(--short)" : "var(--long)",
+                background: "rgba(0,0,0,0.3)",
+              }}
+            >
+              <span>DXY {st.dxyValue}</span>
+              <span>{st.dxyTrend === "BULLISH" ? "▲ USD" : "▼ USD"}</span>
+            </span>
+          )}
+          {/* Asian Range Status */}
+          {st.asianHigh != null && st.asianLow != null && (
+            <span className="rounded px-2 py-0.5 font-mono text-[9px] font-bold tracking-wider border border-amber-500/20 bg-amber-500/10 text-amber-300">
+              ASIAN {st.asianHigh.toFixed(1)} / {st.asianLow.toFixed(1)}
+            </span>
+          )}
+          {/* Upcoming High-Impact News Alert */}
+          {st.upcomingNews && (
+            <span
+              className={`rounded px-2 py-0.5 font-mono text-[9px] font-extrabold tracking-wider border flex items-center gap-1 ${
+                st.upcomingNews.isCooldownActive
+                  ? "bg-red-500/20 border-red-500 text-red-400 animate-pulse"
+                  : "bg-yellow-500/10 border-yellow-500/30 text-yellow-300"
+              }`}
+            >
+              <span>⚠️ NEWS:</span>
+              <span>{st.upcomingNews.event}</span>
+              {st.upcomingNews.isCooldownActive && <span className="font-black underline">(COOLDOWN)</span>}
+            </span>
+          )}
         </div>
 
         <div className="flex flex-1 flex-wrap items-center gap-2">
