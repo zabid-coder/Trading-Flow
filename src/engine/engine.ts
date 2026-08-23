@@ -744,52 +744,61 @@ function evaluate(st: EngineState, cfg: EngineConfig, bar: Bar, cls: CandleClass
   }
 
   // --- RANGE BREAKOUT EA LOGIC ---
-  if (cfg.rbEnabled && st.rbState === "ACTIVE" && st.rbHigh && st.rbLow) {
-    const buffer = cfg.rbBufferPoints * cfg.pointValue;
+  if (cfg.rbEnabled && (st.rbState === "ACTIVE" || st.rbState === "FORMING") && st.rbHigh != null && st.rbLow != null) {
+    const isGold = (cfg.activeSymbol || "").startsWith("XAU");
+    const pointScale = isGold ? 0.01 : 0.0001;
+    const buffer = (cfg.rbBufferPoints ?? 20) * pointScale;
     const longTrigger = st.rbHigh + buffer;
     const shortTrigger = st.rbLow - buffer;
-    
-    // Check if price broke the triggers
-    let entered = false;
-    let rbSide: "LONG" | "SHORT" | null = null;
-    let rbEntry = 0;
-    
-    // Simulate pending orders filling during the bar
-    if (bar.h > longTrigger) { rbSide = "LONG"; rbEntry = longTrigger; }
-    else if (bar.l < shortTrigger) { rbSide = "SHORT"; rbEntry = shortTrigger; }
-    
-    if (rbSide) {
-      // Create a virtual AOI for the openTrade function
-      const a: Aoi = {
-        kind: "PDH", // Dummy
-        role: rbSide === "LONG" ? "R" : "S",
-        y1: rbEntry, y2: rbEntry, ty: rbEntry,
-        from: idx, label: "RANGE BREAKOUT", active: true
-      };
-      
-      entered = cfg.actionCenter
-        ? enqueueSignal(st, cfg, bar, rbSide, a, `RB_${rbSide}_${st.dayKey}`)
-        : openTrade(st, cfg, bar, rbSide, a, `RB_${rbSide}_${st.dayKey}`);
-        
-      if (entered) {
-        st.rbState = "DONE";
-        const t = st.open as Trade | null;
-        if (t) {
-          // Adjust SL to opposite side of range by default, or factor
-          t.sl = rbSide === "LONG" ? st.rbLow : st.rbHigh;
-          // Apply R:R
-          const dist = Math.abs(t.entry - t.sl);
-          t.tp = rbSide === "LONG" ? t.entry + (dist * cfg.rr) : t.entry - (dist * cfg.rr);
+
+    if (st.rbState === "ACTIVE") {
+      let rbSide: "LONG" | "SHORT" | null = null;
+      let rbEntry = 0;
+
+      if (bar.c > longTrigger || bar.h > longTrigger) {
+        rbSide = "LONG";
+        rbEntry = Math.max(bar.o, longTrigger);
+      } else if (bar.c < shortTrigger || bar.l < shortTrigger) {
+        rbSide = "SHORT";
+        rbEntry = Math.min(bar.o, shortTrigger);
+      }
+
+      if (rbSide) {
+        const aoi: Aoi = {
+          kind: "PDH",
+          role: rbSide === "LONG" ? "R" : "S",
+          y1: rbEntry,
+          y2: rbEntry,
+          ty: rbEntry,
+          from: idx,
+          label: `RANGE BREAKOUT (${rbSide === "LONG" ? "HIGH" : "LOW"})`,
+          active: true,
+        };
+
+        const entered = cfg.actionCenter
+          ? enqueueSignal(st, cfg, bar, rbSide, aoi, `RB_${rbSide}_${st.dayKey}`)
+          : openTrade(st, cfg, bar, rbSide, aoi, `RB_${rbSide}_${st.dayKey}`);
+
+        if (entered) {
+          st.rbState = "DONE";
+          const t = st.open as Trade | null;
+          if (t) {
+            const rangeSl = rbSide === "LONG" ? st.rbLow : st.rbHigh;
+            const dist = Math.min(Math.max(Math.abs(t.entry - rangeSl), 0.5 * st.atr), 2.5 * st.atr);
+            t.sl = rbSide === "LONG" ? t.entry - dist : t.entry + dist;
+            t.tp = rbSide === "LONG" ? t.entry + dist * cfg.rr : t.entry - dist * cfg.rr;
+          }
+
+          setEval(
+            [
+              { k: "EA TRIGGER", ok: true, v: `Range Breakout ${rbSide}` },
+              { k: "RANGE BOUNDS", ok: true, v: `H ${fmtP(st.rbHigh)} / L ${fmtP(st.rbLow)}` },
+              { k: "EXECUTION", ok: true, v: `${rbSide} @ ${fmtP(rbEntry)}` },
+            ],
+            `BM Range Breakout EA triggered ${rbSide} trade as price cleared ${fmtP(rbSide === "LONG" ? longTrigger : shortTrigger)}.`
+          );
+          return;
         }
-        
-        setEval(
-          [
-            { k: "RANGE TRIGGER", ok: true, v: `Broke ${rbSide === "LONG" ? "HIGH" : "LOW"}` },
-            { k: "EXECUTION", ok: true, v: `${rbSide} @ ${fmtP(rbEntry)}` },
-          ],
-          `Range Breakout EA placed pending order which filled. State is now DONE.`
-        );
-        return;
       }
     }
   }
@@ -1128,23 +1137,24 @@ export function advance(st: EngineState, cfg: EngineConfig) {
 
   // Range Breakout Tracker
   if (cfg.rbEnabled) {
-    const isStart = barHour === cfg.rbStartH && barMin >= cfg.rbStartM;
-    const isEnd = barHour === cfg.rbEndH && barMin >= cfg.rbEndM;
-    
-    if (st.rbState === "WAITING" && isStart) {
-      st.rbState = "FORMING";
-      st.rbHigh = bar.h;
-      st.rbLow = bar.l;
-    }
-    
-    if (st.rbState === "FORMING") {
-      st.rbHigh = Math.max(st.rbHigh!, bar.h);
-      st.rbLow = Math.min(st.rbLow!, bar.l);
-      if (isEnd) st.rbState = "ACTIVE";
-    }
-    
-    // Reset range at end of day (or specific time)
-    if (barHour === 23 && barMin === 45) {
+    const totalMins = barHour * 60 + barMin;
+    const startMins = (cfg.rbStartH ?? 7) * 60 + (cfg.rbStartM ?? 0);
+    const endMins = (cfg.rbEndH ?? 10) * 60 + (cfg.rbEndM ?? 0);
+
+    if (totalMins >= startMins && totalMins < endMins) {
+      if (st.rbState === "WAITING" || st.rbState === "DONE" || !st.rbHigh || !st.rbLow) {
+        st.rbState = "FORMING";
+        st.rbHigh = bar.h;
+        st.rbLow = bar.l;
+      } else if (st.rbState === "FORMING") {
+        st.rbHigh = Math.max(st.rbHigh, bar.h);
+        st.rbLow = Math.min(st.rbLow, bar.l);
+      }
+    } else if (totalMins >= endMins && totalMins < endMins + 360) {
+      if (st.rbState === "FORMING" && st.rbHigh && st.rbLow) {
+        st.rbState = "ACTIVE";
+      }
+    } else if (totalMins >= 23 * 60 + 45 || totalMins < startMins) {
       st.rbState = "WAITING";
       st.rbHigh = null;
       st.rbLow = null;
