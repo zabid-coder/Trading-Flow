@@ -1332,13 +1332,13 @@ function evaluate(st: EngineState, cfg: EngineConfig, bar: Bar, cls: CandleClass
       // --- SECONDARY INSTITUTIONAL STRATEGIES: TREND PULLBACK & RSI EXHAUSTION ---
       let secondaryEntered = false;
 
-      // 1. Trend EMA Pullback Strategy
+      // 1. Trend EMA Pullback Strategy (Requires strict LPR/HPR rejection & Killzone timing)
       const isBull = st.ema50 > st.ema200;
       const isBear = st.ema50 < st.ema200;
       const emaCd = st.cooldown["EMA_PULLBACK"];
-      const canEma = emaCd == null || idx - emaCd >= 8;
+      const canEma = (emaCd == null || idx - emaCd >= 18) && (st.activeKillzone === "LONDON" || st.activeKillzone === "NEW_YORK" || st.activeKillzone === "OVERLAP");
 
-      if (canEma && isBull && bar.l <= st.ema50 + 0.4 * atr && bar.c > st.ema50 && (cls === "LPR" || bar.c > bar.o)) {
+      if (canEma && isBull && bar.l <= st.ema50 + 0.3 * atr && bar.c > st.ema50 && cls === "LPR") {
         const emaAoi: Aoi = {
           kind: "OB_D",
           role: "S",
@@ -1362,7 +1362,7 @@ function evaluate(st: EngineState, cfg: EngineConfig, bar: Bar, cls: CandleClass
           );
           return;
         }
-      } else if (canEma && isBear && bar.h >= st.ema50 - 0.4 * atr && bar.c < st.ema50 && (cls === "HPR" || bar.c < bar.o)) {
+      } else if (canEma && isBear && bar.h >= st.ema50 - 0.3 * atr && bar.c < st.ema50 && cls === "HPR") {
         const emaAoi: Aoi = {
           kind: "OB_S",
           role: "R",
@@ -1388,8 +1388,8 @@ function evaluate(st: EngineState, cfg: EngineConfig, bar: Bar, cls: CandleClass
         }
       }
 
-      // 2. RSI Exhaustion Mean-Reversion Strategy
-      if (!secondaryEntered && cfg.enabledStrategies.rsi_exhaustion && idx >= 15) {
+      // 2. RSI Exhaustion Mean-Reversion Strategy (Requires extreme RSI <= 28 or >= 72 + LPR/HPR Rejection)
+      if (!secondaryEntered && cfg.enabledStrategies.rsi_exhaustion && idx >= 20) {
         let gains = 0, losses = 0;
         const rsiPeriod = 14;
         const startIdx = Math.max(1, idx - rsiPeriod);
@@ -1402,8 +1402,8 @@ function evaluate(st: EngineState, cfg: EngineConfig, bar: Bar, cls: CandleClass
         const curRsi = 100 - 100 / (1 + rs);
 
         const rsiCd = st.cooldown["RSI_EXHAUSTION"];
-        const canRsi = rsiCd == null || idx - rsiCd >= 8;
-        if (canRsi && curRsi <= 32 && (cls === "LPR" || bar.c > bar.o)) {
+        const canRsi = (rsiCd == null || idx - rsiCd >= 18) && (st.creamerFramework?.inOteZone || st.activeKillzone !== "OFF_SESSION");
+        if (canRsi && curRsi <= 28 && cls === "LPR") {
           const rsiAoi: Aoi = {
             kind: "TB",
             role: "S",
@@ -1426,7 +1426,7 @@ function evaluate(st: EngineState, cfg: EngineConfig, bar: Bar, cls: CandleClass
             );
             return;
           }
-        } else if (canRsi && curRsi >= 68 && (cls === "HPR" || bar.c < bar.o)) {
+        } else if (canRsi && curRsi >= 72 && cls === "HPR") {
           const rsiAoi: Aoi = {
             kind: "TT",
             role: "R",
