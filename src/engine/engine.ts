@@ -441,14 +441,21 @@ interface TradePlan {
 /** size a trade against current bar and risk model (fixedUSD, percentEquity, fractionalKelly) */
 function planTrade(st: EngineState, cfg: EngineConfig, bar: Bar, side: "LONG" | "SHORT", atr: number): TradePlan | null {
   const half = cfg.spread / 2;
+  const isGold = (cfg.activeSymbol || "").startsWith("XAU");
+  const effAtr = Math.max(atr || 2.5, isGold ? 2.5 : 0.002);
   const entry = side === "LONG" ? bar.c + half : bar.c - half;
-  const buffer = Math.max(0.12 * atr, 0.25);
-  const sl = side === "LONG" ? bar.l - buffer : bar.h + buffer;
+
+  // Institutional Stop Distance: Give trade proper breathing room (at least 1.0 - 1.5 ATR) so noise doesn't trigger SL
+  const minStopBuffer = isGold ? 2.8 : 0.002;
+  const buffer = Math.max(0.85 * effAtr, minStopBuffer);
+  const sl = side === "LONG"
+    ? Math.min(bar.l - 0.3 * effAtr, entry - buffer)
+    : Math.max(bar.h + 0.3 * effAtr, entry + buffer);
   const slDist = Math.abs(entry - sl);
 
-  const minSl = (cfg.minSlAtr || 0.2) * atr;
-  const maxSl = (cfg.maxSlAtr || 4.0) * atr;
-  if (slDist < minSl || slDist > maxSl) return null; // reject degenerate geometry
+  const minSl = Math.max(minStopBuffer, (cfg.minSlAtr || 0.6) * effAtr);
+  const maxSl = (cfg.maxSlAtr || 4.5) * effAtr;
+  if (slDist < minSl * 0.8 || slDist > maxSl) return null;
 
   // Anti-Streak Drawdown Protection: Throttle risk after consecutive losses
   const closedTrades = st.trades.filter((t) => !t.open);
