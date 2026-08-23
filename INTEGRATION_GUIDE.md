@@ -8,14 +8,16 @@ This guide provides step-by-step instructions to integrate the **Institutional G
 
 ```mermaid
 graph TD
-    Market[Binance / OANDA / MT5 Market Ticks] --> Engine[gold_strategy_core.py]
-    Engine --> RC[1. RegimeClassifier: 8 Market States]
-    Engine --> LM[2. LiquidityMap: PDH/PDL + FVG + Order Blocks]
-    Engine --> GP[3. GoldPatternDetector: Asian Fakeout + Friday Risk]
-    RC & LM & GP --> SG[4. SignalGenerator: Confluence Score >= 75 & 1:2.5 RR]
-    SG --> Bridge[fastapi_mt5_bridge.py /webhook]
-    Bridge --> MT5[MetaTrader 5 Desktop Execution]
-    SG --> UI[Trading Flow PRO Web Dashboard]
+    Market["Binance / OANDA / MT5 Market Ticks"] --> Engine["gold_strategy_core.py"]
+    Engine --> RC["1. RegimeClassifier: 8 Market States"]
+    Engine --> LM["2. LiquidityMap: PDH/PDL + FVG + Order Blocks"]
+    Engine --> GP["3. GoldPatternDetector: Asian Fakeout + Friday Risk"]
+    RC --> SG["4. SignalGenerator: Confluence >= 75 & 1:2.5 RR"]
+    LM --> SG
+    GP --> SG
+    SG --> Bridge["fastapi_mt5_bridge.py /webhook"]
+    Bridge --> MT5["MetaTrader 5 Desktop Execution"]
+    SG --> UI["Trading Flow PRO Web Dashboard"]
 ```
 
 ---

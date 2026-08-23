@@ -27,27 +27,27 @@
 ```mermaid
 graph TD
     subgraph Market Data Layer
-        A[Binance / OANDA / MT5 WebSocket Feeds]
+        A["Binance / OANDA / MT5 WebSocket Feeds"]
     end
 
     subgraph Multi-Timeframe Strategy Core
-        A --> H4[4H Macro Trend: 4H_EMA20 vs 4H_EMA50]
-        H4 --> M15[15m Structural Setup: Liquidity Heat Map + FVG + Order Blocks]
-        M15 --> M5[5m Micro Confirmation: Order Flow Delta + ChoCh + LPR/HPR]
+        A --> H4["4H Macro Trend: 4H_EMA20 vs 4H_EMA50"]
+        H4 --> M15["15m Structural Setup: Liquidity Heat Map + FVG + Order Blocks"]
+        M15 --> M5["5m Micro Confirmation: Order Flow Delta + ChoCh + LPR/HPR"]
     end
 
     subgraph Institutional Filter Engine
-        M5 --> R1{8 Market Regimes Gate}
-        R1 -->|Strong Bull / Bear / Grab| R2{Confluence Scorer >= 75/100}
-        R2 -->|Passed| R3{Gold Patterns: Asian Fakeout / Friday Guard}
+        M5 --> R1{"8 Market Regimes Gate"}
+        R1 -->|"Strong Bull / Bear / Grab"| R2{"Confluence Scorer >= 75/100"}
+        R2 -->|"Passed"| R3{"Gold Patterns: Asian Fakeout / Friday Guard"}
     end
 
     subgraph Execution & Risk Engine
-        R3 --> AC[Supervised Action Center / Auto-Pilot]
-        AC --> BE{Risk Engine: Compounded 2% + ATR Volatility Sizing}
-        BE --> MT5[Hardened FastAPI MT5 Bridge]
-        MT5 --> Broker[MetaTrader 5 Desktop Execution]
-        BE --> LivePos[Position Manager: Auto-BE @ +1.0R | 50% TP @ +1.5R | 4H Time Stop]
+        R3 --> AC["Supervised Action Center / Auto-Pilot"]
+        AC --> BE{"Risk Engine: Compounded 2% + ATR Volatility Sizing"}
+        BE --> MT5["Hardened FastAPI MT5 Bridge"]
+        MT5 --> Broker["MetaTrader 5 Desktop Execution"]
+        BE --> LivePos["Position Manager: Auto-BE @ +1.0R · 50% TP @ +1.5R · 4H Time Stop"]
     end
 ```
 
