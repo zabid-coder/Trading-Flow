@@ -20,7 +20,7 @@ export const DEFAULT_CFG: EngineConfig = {
   enabledStrategies: {
     creamer_4layer: true,
     asian_fakeout: true,
-    ema_pullback: true,
+    ema_pullback: false, // Turned OFF by default to eliminate low-winrate 50-EMA chop
     rsi_exhaustion: true,
     session_breakout: true,
   },
@@ -1311,8 +1311,8 @@ function evaluate(st: EngineState, cfg: EngineConfig, bar: Bar, cls: CandleClass
     const valid = swept.filter((s) => {
       const cd = st.cooldown[coolKey(s.a)];
       if (cd != null && idx - cd < 10) return false;
-      // Filter 3: Eliminate standalone CDH/CDL entries — keep only major static pools
-      if (s.a.kind === "CDH" || s.a.kind === "CDL") return false;
+      // Filter 3: Eliminate weak dynamic session pools (CDH/CDL/OVL) — keep only major static liquidity pools (PDH, PDL, LON, NY, Triples)
+      if (s.a.kind === "CDH" || s.a.kind === "CDL" || s.a.kind === "OVL_H" || s.a.kind === "OVL_L") return false;
       // Filter 4: OB requires FVG displacement — check for 3-bar FVG nearby
       if (s.a.kind === "OB_D" || s.a.kind === "OB_S") {
         let hasFvg = false;
