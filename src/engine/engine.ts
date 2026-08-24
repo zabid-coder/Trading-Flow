@@ -268,9 +268,11 @@ function buildAois(st: EngineState, cfg: EngineConfig, cdhPrev: number, cdlPrev:
 function settle(st: EngineState, cfg: EngineConfig, t: Trade, bar: Bar, outcome: "TP" | "SL", px: number) {
   const idx = st.bars.length - 1;
   const dir = t.side === "LONG" ? 1 : -1;
-  // Account for realistic execution slippage
-  const slippage = (cfg.slippagePoints || 0.15) * (st.regime === "LIQUIDITY_HUNT" ? 1.5 : 1.0);
-  const realizedPx = outcome === "TP" ? px - (dir === 1 ? slippage : -slippage) : px + (dir === 1 ? -slippage : slippage);
+  // Slippage only affects favorable exits (TP) — SL fills at the stop price (already worst-case)
+  const slippage = outcome === "TP" ? (cfg.slippagePoints || 0.10) : 0;
+  const realizedPx = outcome === "TP"
+    ? (t.side === "LONG" ? px - slippage : px + slippage)  // TP slightly worse
+    : px;  // SL fills at exact stop price
   const pnl = dir * t.oz * (realizedPx - t.entry);
 
   t.open = false;
@@ -302,28 +304,28 @@ function settle(st: EngineState, cfg: EngineConfig, t: Trade, bar: Bar, outcome:
 function manage(st: EngineState, cfg: EngineConfig, bar: Bar) {
   const t = st.open;
   if (!t) return;
-  const half = cfg.spread / 2;
   const atr = st.atr || 2.5;
 
   // 1. Check Exit conditions (SL and TP) with realistic intrabar direction priority
+  // Spread is already baked into entry price by planTrade — compare raw bar prices to SL/TP
   if (t.side === "LONG") {
     if (bar.c >= bar.o) {
       // Bullish candle: check TP expansion first
-      if (bar.h - half >= t.tp) {
+      if (bar.h >= t.tp) {
         settle(st, cfg, t, bar, "TP", t.tp);
         return;
       }
-      if (bar.l - half <= t.sl) {
+      if (bar.l <= t.sl) {
         settle(st, cfg, t, bar, "SL", t.sl);
         return;
       }
     } else {
       // Bearish candle: check SL breakdown first
-      if (bar.l - half <= t.sl) {
+      if (bar.l <= t.sl) {
         settle(st, cfg, t, bar, "SL", t.sl);
         return;
       }
-      if (bar.h - half >= t.tp) {
+      if (bar.h >= t.tp) {
         settle(st, cfg, t, bar, "TP", t.tp);
         return;
       }
@@ -332,21 +334,21 @@ function manage(st: EngineState, cfg: EngineConfig, bar: Bar) {
     // SHORT side
     if (bar.c <= bar.o) {
       // Bearish candle: check TP drop first
-      if (bar.l + half <= t.tp) {
+      if (bar.l <= t.tp) {
         settle(st, cfg, t, bar, "TP", t.tp);
         return;
       }
-      if (bar.h + half >= t.sl) {
+      if (bar.h >= t.sl) {
         settle(st, cfg, t, bar, "SL", t.sl);
         return;
       }
     } else {
       // Bullish candle: check SL rally first
-      if (bar.h + half >= t.sl) {
+      if (bar.h >= t.sl) {
         settle(st, cfg, t, bar, "SL", t.sl);
         return;
       }
-      if (bar.l + half <= t.tp) {
+      if (bar.l <= t.tp) {
         settle(st, cfg, t, bar, "TP", t.tp);
         return;
       }
@@ -357,9 +359,10 @@ function manage(st: EngineState, cfg: EngineConfig, bar: Bar) {
   if (st.open) {
     const curTrade = st.open;
     const curPrice = bar.c;
+    // Spread already baked into entry — track raw unrealized P&L
     const upnl = curTrade.side === "LONG"
-      ? curTrade.oz * (curPrice - half - curTrade.entry)
-      : curTrade.oz * (curTrade.entry - (curPrice + half));
+      ? curTrade.oz * (curPrice - curTrade.entry)
+      : curTrade.oz * (curTrade.entry - curPrice);
     const currentR = upnl / Math.max(1, curTrade.risk);
 
     // Pyramid BE Step 1: Lock 25% partial profit at +0.5R
@@ -374,7 +377,7 @@ function manage(st: EngineState, cfg: EngineConfig, bar: Bar) {
     // Pyramid BE Step 2: Move SL to breakeven at threshold (default +1.0R)
     if (cfg.autoBreakeven && !curTrade.isBreakeven && currentR >= (cfg.beThresholdR || 1.0)) {
       const buffer = Math.max(0.04 * atr, 0.10);
-      const beSl = curTrade.side === "LONG" ? curTrade.entry + half + buffer : curTrade.entry - (half + buffer);
+      const beSl = curTrade.side === "LONG" ? curTrade.entry + buffer : curTrade.entry - buffer;
       curTrade.sl = beSl;
       curTrade.isBreakeven = true;
       ev(
@@ -390,7 +393,7 @@ function manage(st: EngineState, cfg: EngineConfig, bar: Bar) {
     if (cfg.trailingStop && currentR >= (cfg.trailThresholdR || 1.5)) {
       const trailDist = (cfg.trailAtrDist || 1.0) * atr;
       if (curTrade.side === "LONG") {
-        const potentialSl = curPrice - half - trailDist;
+        const potentialSl = curPrice - trailDist;
         if (potentialSl > curTrade.sl) {
           curTrade.sl = potentialSl;
           curTrade.trailActive = true;
@@ -398,7 +401,7 @@ function manage(st: EngineState, cfg: EngineConfig, bar: Bar) {
           curTrade.trailStop = potentialSl;
         }
       } else {
-        const potentialSl = curPrice + half + trailDist;
+        const potentialSl = curPrice + trailDist;
         if (potentialSl < curTrade.sl) {
           curTrade.sl = potentialSl;
           curTrade.trailActive = true;
@@ -984,8 +987,8 @@ function evaluate(st: EngineState, cfg: EngineConfig, bar: Bar, cls: CandleClass
           st.asianTradedDay = -1; // Only 1 Asian fakeout trade per day
           const t = st.open as Trade | null;
           if (t) {
-            t.sl = Math.min(bar.l - 0.25 * atr, t.entry - 0.8 * atr);
-            t.tp = Math.max(st.asianHigh, t.entry + 2.5 * Math.abs(t.entry - t.sl));
+            // Keep planTrade's institutional 1.0-1.5 ATR stop — only override TP to target opposite Asian boundary
+            t.tp = Math.max(st.asianHigh, t.entry + cfg.rr * Math.abs(t.entry - t.sl));
           }
           setEval(
             [
@@ -1020,8 +1023,8 @@ function evaluate(st: EngineState, cfg: EngineConfig, bar: Bar, cls: CandleClass
           st.asianTradedDay = -1;
           const t = st.open as Trade | null;
           if (t) {
-            t.sl = Math.max(bar.h + 0.25 * atr, t.entry + 0.8 * atr);
-            t.tp = Math.min(st.asianLow, t.entry - 2.5 * Math.abs(t.entry - t.sl));
+            // Keep planTrade's institutional 1.0-1.5 ATR stop — only override TP to target opposite Asian boundary
+            t.tp = Math.min(st.asianLow, t.entry - cfg.rr * Math.abs(t.entry - t.sl));
           }
           setEval(
             [
@@ -1439,7 +1442,7 @@ function evaluate(st: EngineState, cfg: EngineConfig, bar: Bar, cls: CandleClass
       const isBull = st.ema50 > st.ema200;
       const isBear = st.ema50 < st.ema200;
       const emaCd = st.cooldown["EMA_PULLBACK"];
-      const canEma = (emaCd == null || idx - emaCd >= 18) && (st.activeKillzone === "LONDON" || st.activeKillzone === "NEW_YORK" || st.activeKillzone === "OVERLAP");
+      const canEma = cfg.enabledStrategies.ema_pullback && (emaCd == null || idx - emaCd >= 18) && (st.activeKillzone === "LONDON" || st.activeKillzone === "NEW_YORK" || st.activeKillzone === "OVERLAP");
 
       if (canEma && isBull && bar.l <= st.ema50 + 0.3 * atr && bar.c > st.ema50 && cls === "LPR") {
         const emaAoi: Aoi = {
