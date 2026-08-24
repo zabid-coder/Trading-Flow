@@ -38,7 +38,12 @@ export const DEFAULT_CFG: EngineConfig = {
   windowEnabled: false,
   windowGrid: defaultWindowGrid(),
   telegram: false,
-  aoi: { pdh: true, triple: true, ob: true, session: true },
+  aoi: {
+    pdh: true,
+    triple: false, // Turned OFF by default — eliminates 4th-touch liquidity breakout traps
+    ob: false, // Turned OFF by default — eliminates naked order block chop
+    session: true,
+  },
   feedMode: "simulated",
   activeSymbol: "XAUUSD",
   timeframe: "15m",

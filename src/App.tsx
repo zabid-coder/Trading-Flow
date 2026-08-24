@@ -366,7 +366,6 @@ function TerminalContent() {
     t.open = false;
 
     s.balance += pnl;
-    s.trades.push(t);
     s.open = null;
 
     saveTradeToJournal(t, cfg.activeSymbol, cfg.feedMode === "live" ? "LIVE" : "DEMO");

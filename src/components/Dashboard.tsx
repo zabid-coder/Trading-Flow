@@ -203,7 +203,7 @@ export const Dashboard: React.FC<Props> = ({
           </div>
         </Card>
 
-        <Card title="Daily P&L" icon={<Zap size={18} />} status="active">
+        <Card title="Total Net P&L" icon={<Zap size={18} />} status="active">
           <div
             className={`text-2xl md:text-3xl font-bold ${
               (stats?.netPnl || 0) >= 0 ? 'text-emerald-400' : 'text-rose-400'
@@ -212,7 +212,7 @@ export const Dashboard: React.FC<Props> = ({
             {fmtUSD(stats?.netPnl || 0, true, 2)}
           </div>
           <div className="text-xs text-slate-400 mt-1">
-            {stats?.closed?.length || 4} Trades Executed ({stats?.wins || 3}W / {stats?.losses || 1}L)
+            {stats?.closed?.length || 0} Total Closed ({stats?.wins || 0}W / {stats?.losses || 0}L)
           </div>
         </Card>
 
