@@ -47,33 +47,35 @@ function gauss(rng: () => number) {
   return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
 }
 
-/** Transition matrix for market regimes */
+/** Transition matrix for market regimes with realistic institutional follow-through */
 function pickNextRegime(current: MarketRegime, rng: () => number): { regime: MarketRegime; duration: number } {
   const r = rng();
   let next: MarketRegime = "RANGING_CHOP";
+  let minDuration = 12;
+  let maxDuration = 36;
 
   if (current === "RANGING_CHOP") {
-    if (r < 0.35) next = "RANGING_CHOP";
-    else if (r < 0.60) next = "LIQUIDITY_HUNT";
-    else if (r < 0.80) next = "TRENDING_BULL";
-    else next = "TRENDING_BEAR";
+    if (r < 0.25) next = "RANGING_CHOP";
+    else if (r < 0.55) next = "LIQUIDITY_HUNT";
+    else if (r < 0.78) { next = "TRENDING_BULL"; minDuration = 18; maxDuration = 48; }
+    else { next = "TRENDING_BEAR"; minDuration = 18; maxDuration = 48; }
   } else if (current === "TRENDING_BULL") {
-    if (r < 0.50) next = "TRENDING_BULL";
-    else if (r < 0.75) next = "LIQUIDITY_HUNT"; // blow-off trap top
+    if (r < 0.60) { next = "TRENDING_BULL"; minDuration = 20; maxDuration = 52; } // Persistent trend
+    else if (r < 0.82) next = "LIQUIDITY_HUNT"; // Exhaustion trap top
     else next = "RANGING_CHOP";
   } else if (current === "TRENDING_BEAR") {
-    if (r < 0.50) next = "TRENDING_BEAR";
-    else if (r < 0.75) next = "LIQUIDITY_HUNT"; // flush trap bottom
+    if (r < 0.60) { next = "TRENDING_BEAR"; minDuration = 20; maxDuration = 52; } // Persistent trend
+    else if (r < 0.82) next = "LIQUIDITY_HUNT"; // Flush trap bottom
     else next = "RANGING_CHOP";
   } else {
-    // After LIQUIDITY_HUNT -> usually mean-revert or trend reverse
-    if (r < 0.45) next = "RANGING_CHOP";
-    else if (r < 0.75) next = "TRENDING_BULL";
-    else next = "TRENDING_BEAR";
+    // After LIQUIDITY_HUNT -> Institutional smart money provides strong directional follow-through
+    if (r < 0.45) { next = "TRENDING_BULL"; minDuration = 20; maxDuration = 48; }
+    else if (r < 0.90) { next = "TRENDING_BEAR"; minDuration = 20; maxDuration = 48; }
+    else next = "RANGING_CHOP";
   }
 
-  // Duration in bars (between 6 and 28 bars)
-  const duration = Math.floor(6 + rng() * 22);
+  // Duration in bars (between minDuration and maxDuration)
+  const duration = Math.floor(minDuration + rng() * (maxDuration - minDuration));
   return { regime: next, duration };
 }
 
@@ -118,61 +120,61 @@ export function nextBar(st: EngineState, intervalMs: number = BAR_MS): Bar {
   let wD = 0;
   let v = s.mult * (0.6 + rng() * 0.8);
 
-  // 2. Regime-Specific Bar Generation
+  // 2. Regime-Specific Bar Generation with Momentum Follow-Through
   switch (st.regime) {
     case "TRENDING_BULL": {
-      const dirVol = baseVol * (1.15 + rng() * 0.55);
-      const body = dirVol * (0.40 + rng() * 0.70);
+      const dirVol = baseVol * (1.25 + rng() * 0.65);
+      const body = dirVol * (0.50 + rng() * 0.75);
       c = o + body;
-      wU = Math.abs(gauss(rng)) * dirVol * 0.30;
-      wD = Math.abs(gauss(rng)) * dirVol * 0.22;
-      v *= 1.5;
+      wU = Math.abs(gauss(rng)) * dirVol * 0.25;
+      wD = Math.abs(gauss(rng)) * dirVol * 0.18;
+      v *= 1.6;
       break;
     }
     case "TRENDING_BEAR": {
-      const dirVol = baseVol * (1.15 + rng() * 0.55);
-      const body = dirVol * (0.40 + rng() * 0.70);
+      const dirVol = baseVol * (1.25 + rng() * 0.65);
+      const body = dirVol * (0.50 + rng() * 0.75);
       c = o - body;
-      wU = Math.abs(gauss(rng)) * dirVol * 0.22;
-      wD = Math.abs(gauss(rng)) * dirVol * 0.30;
-      v *= 1.5;
+      wU = Math.abs(gauss(rng)) * dirVol * 0.18;
+      wD = Math.abs(gauss(rng)) * dirVol * 0.25;
+      v *= 1.6;
       break;
     }
     case "LIQUIDITY_HUNT": {
       // High volatility sweep hunting previous liquidity pools
-      const sweepVol = baseVol * (1.5 + rng() * 1.5);
+      const sweepVol = baseVol * (1.6 + rng() * 1.6);
       const huntLow = rng() < 0.5;
-      const isCleanRejection = rng() < 0.60; // 60% clean rejection, 40% messy wick fill
+      const isCleanRejection = rng() < 0.70; // 70% clean rejection, 30% messy wick fill
 
       if (isCleanRejection) {
-        const body = sweepVol * 0.16 * (rng() - 0.5);
+        const body = sweepVol * 0.18 * (rng() - 0.5);
         c = o + body;
         if (huntLow) {
-          wD = sweepVol * (1.5 + rng() * 1.3);
-          wU = sweepVol * 0.22 * rng();
+          wD = sweepVol * (1.6 + rng() * 1.4);
+          wU = sweepVol * 0.20 * rng();
         } else {
-          wU = sweepVol * (1.5 + rng() * 1.3);
-          wD = sweepVol * 0.22 * rng();
+          wU = sweepVol * (1.6 + rng() * 1.4);
+          wD = sweepVol * 0.20 * rng();
         }
       } else {
-        // Messy rejection (less pronounced wick, larger counter-body)
-        const body = sweepVol * 0.45 * (huntLow ? 0.8 : -0.8);
+        // Messy rejection
+        const body = sweepVol * 0.40 * (huntLow ? 0.8 : -0.8);
         c = o + body;
         wD = sweepVol * (0.8 + rng() * 0.7);
         wU = sweepVol * (0.8 + rng() * 0.7);
       }
-      v *= 2.2;
+      v *= 2.4;
       break;
     }
     case "RANGING_CHOP":
     default: {
-      // Mean-reverting chop with clustering near nearest extremes
+      // Mean-reverting chop
       const chopVol = baseVol * (0.75 + rng() * 0.45);
       const stretch = o - st.dayOpen;
-      const pull = stretch * 0.09;
-      c = o - pull + gauss(rng) * chopVol * 0.40;
-      wU = Math.abs(gauss(rng)) * chopVol * 0.48;
-      wD = Math.abs(gauss(rng)) * chopVol * 0.48;
+      const pull = stretch * 0.08;
+      c = o - pull + gauss(rng) * chopVol * 0.38;
+      wU = Math.abs(gauss(rng)) * chopVol * 0.45;
+      wD = Math.abs(gauss(rng)) * chopVol * 0.45;
       v *= 0.85;
       break;
     }

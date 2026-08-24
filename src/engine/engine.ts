@@ -43,16 +43,16 @@ export const DEFAULT_CFG: EngineConfig = {
   activeSymbol: "XAUUSD",
   timeframe: "15m",
   chartView: "native",
-  autoBreakeven: true,
-  beThresholdR: 1.2,
+  autoBreakeven: false,
+  beThresholdR: 1.8,
   soundEnabled: true,
   sizingMode: "percentEquity",
   equityRiskPct: 1.5,
   kellyFraction: 0.35,
-  trailingStop: true,
-  trailThresholdR: 1.5,
-  trailAtrDist: 1.0,
-  slippagePoints: 0.15,
+  trailingStop: false,
+  trailThresholdR: 2.2,
+  trailAtrDist: 1.2,
+  slippagePoints: 0.10,
   minSlAtr: 0.2,
   maxSlAtr: 4.0,
   trendFilter: true,
@@ -365,18 +365,9 @@ function manage(st: EngineState, cfg: EngineConfig, bar: Bar) {
       : curTrade.oz * (curTrade.entry - curPrice);
     const currentR = upnl / Math.max(1, curTrade.risk);
 
-    // Pyramid BE Step 1: Lock 25% partial profit at +0.5R
-    if (cfg.autoBreakeven && currentR >= 0.5 && !curTrade.partialClosed && !curTrade.partialLock_50) {
-      const partialPnl = (curTrade.risk * 0.5) * 0.25;
-      st.balance += partialPnl;
-      curTrade.partialRealized = (curTrade.partialRealized || 0) + partialPnl;
-      curTrade.partialLock_50 = true;
-      ev(st, bar.t, "TP", curTrade.side === "LONG" ? "long" : "short", `💰 Locked 25% partial profit @ +0.5R (+$${partialPnl.toFixed(0)})`);
-    }
-
-    // Pyramid BE Step 2: Move SL to breakeven at threshold (default +1.0R)
-    if (cfg.autoBreakeven && !curTrade.isBreakeven && currentR >= (cfg.beThresholdR || 1.0)) {
-      const buffer = Math.max(0.04 * atr, 0.10);
+    // Auto Breakeven: Only move SL to breakeven at a mature profit threshold (default +1.8R) with healthy buffer
+    if (cfg.autoBreakeven && !curTrade.isBreakeven && currentR >= (cfg.beThresholdR || 1.8)) {
+      const buffer = Math.max(0.12 * atr, 0.40);
       const beSl = curTrade.side === "LONG" ? curTrade.entry + buffer : curTrade.entry - buffer;
       curTrade.sl = beSl;
       curTrade.isBreakeven = true;
@@ -389,9 +380,9 @@ function manage(st: EngineState, cfg: EngineConfig, bar: Bar) {
       );
     }
 
-    // Pyramid BE Step 3: Dynamic ATR Trailing Stop (activates past +1.5R)
-    if (cfg.trailingStop && currentR >= (cfg.trailThresholdR || 1.5)) {
-      const trailDist = (cfg.trailAtrDist || 1.0) * atr;
+    // Dynamic ATR Trailing Stop (activates past +2.2R)
+    if (cfg.trailingStop && currentR >= (cfg.trailThresholdR || 2.2)) {
+      const trailDist = (cfg.trailAtrDist || 1.2) * atr;
       if (curTrade.side === "LONG") {
         const potentialSl = curPrice - trailDist;
         if (potentialSl > curTrade.sl) {
