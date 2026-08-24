@@ -47,43 +47,58 @@ export default function StrategyGuideModal({ isOpen, onClose }: Props) {
         <div className="p-3 rounded border space-y-2.5" style={{ borderColor: "var(--line)", background: "var(--bg2)" }}>
           <div className="font-bold text-[12px] text-white">2. Active Strategies & Algorithm Logic</div>
 
-          <div className="border-l-2 border-[var(--long)] pl-2.5 space-y-1">
-            <div className="font-bold text-[11px] text-[var(--long)]">Strategy A: Liquidity Trap & Sweep (Course Core)</div>
+          <div className="border-l-2 border-[var(--gold)] pl-2.5 space-y-1">
+            <div className="font-bold text-[11px] text-[var(--gold)]">1. Chris Creamer 4-Layer Institutional Framework (Core)</div>
             <div className="text-[10px] text-[var(--muted)] leading-relaxed">
-              Price hunts stops above Prior Day High (PDH) or below Prior Day Low (PDL), fails to hold, and closes back inside on a Long/High Pin Rejection (LPR/HPR) wick. We enter at candle close with a tight stop outside the sweep and a 1:2 to 1:3 Take Profit.
+              4-Gate Pipeline: (1) Environment (Synthetic GEX) ➔ (2) Location (0.705-0.886 Fibonacci OTE Discount/Premium) ➔ (3) Confirmation (Volume Delta & Trapped Traders Absorption) ➔ (4) 1:2.5R Precision Trigger.
             </div>
           </div>
 
-          <div className="border-l-2 border-[var(--gold)] pl-2.5 space-y-1">
-            <div className="font-bold text-[11px] text-[var(--gold)]">Strategy B: Institutional Order Block & FVG Retest</div>
+          <div className="border-l-2 border-[var(--long)] pl-2.5 space-y-1">
+            <div className="font-bold text-[11px] text-[var(--long)]">2. Asian Range Liquidity Sweep (Gold Special)</div>
             <div className="text-[10px] text-[var(--muted)] leading-relaxed">
-              Identifies unmitigated Fair Value Gaps (FVG) and institutional supply/demand order blocks, entering when price pulls back into the zone with confirmation.
+              London session sweeps above/below 00:00–07:00 GMT Asian Range, traps breakout retail traders, and snaps back inside to target the opposite Asian boundary (Win rate 72-76%).
+            </div>
+          </div>
+
+          <div className="border-l-2 border-blue-400 pl-2.5 space-y-1">
+            <div className="font-bold text-[11px] text-blue-400">3. 50/200 EMA Institutional Trend Pullback</div>
+            <div className="text-[10px] text-[var(--muted)] leading-relaxed">
+              4H Macro trend alignment (EMA50 &gt; EMA200) executing high-probability pullbacks with Pin Bar (LPR/HPR) confirmation during London &amp; NY Killzones.
+            </div>
+          </div>
+
+          <div className="border-l-2 border-purple-400 pl-2.5 space-y-1">
+            <div className="font-bold text-[11px] text-purple-400">4. 14-Period RSI Exhaustion &amp; Momentum Fade</div>
+            <div className="text-[10px] text-[var(--muted)] leading-relaxed">
+              Fades extreme oversold (&le; 28) or overbought (&ge; 72) momentum spikes into key swing extremes with mean-reversion targets.
             </div>
           </div>
         </div>
 
         {/* Section 3: Risk & Discipline Math */}
         <div className="p-3 rounded border space-y-2" style={{ borderColor: "var(--line)", background: "var(--bg2)" }}>
-          <div className="font-bold text-[12px] text-white">3. Institutional Risk Management Rules</div>
+          <div className="font-bold text-[12px] text-white">3. Institutional Anti-Blowout Risk Management</div>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-[10px] text-[var(--muted)]">
             <div className="p-2 rounded bg-[var(--bg)] border border-[var(--line)]">
-              <span className="font-bold text-white block mb-0.5">Fixed USD Risk Sizing</span>
-              Position size is calculated dynamically: <br />
-              <code className="text-[var(--gold)]">Lots = Risk $ / (Stop Distance × Point Value)</code>
+              <span className="font-bold text-white block mb-0.5">Dynamic 1.5% Percent Equity Sizing</span>
+              Position size scales automatically with balance: <br />
+              <code className="text-[var(--gold)]">Lots = (Balance × 1.5%) / (Stop Distance × Point Value)</code>
             </div>
             <div className="p-2 rounded bg-[var(--bg)] border border-[var(--line)]">
-              <span className="font-bold text-white block mb-0.5">Daily Loss Circuit Breaker</span>
-              If the engine hits 2 stop-losses in a single day, trading automatically halts to prevent tilt and drawdowns.
+              <span className="font-bold text-white block mb-0.5">Anti-Streak Drawdown Guard</span>
+              If 2 consecutive stop-losses occur, risk automatically cuts by 50% (0.75%) until the next win, mathematically preventing blowouts.
             </div>
           </div>
         </div>
 
-        <div className="flex justify-end pt-2">
+        {/* Footer */}
+        <div className="flex justify-end pt-2 border-t border-white/10">
           <button
             onClick={onClose}
-            className="px-5 py-1.5 rounded bg-[var(--gold)] text-black font-bold text-[11px] hover:brightness-110"
+            className="px-4 py-2 rounded font-bold text-black bg-[var(--gold)] hover:bg-[var(--gold-hi)] transition-colors shadow-lg font-mono text-xs"
           >
-            Got It, Back to Terminal
+            I UNDERSTAND THE RULES · CLOSE PLAYBOOK
           </button>
         </div>
       </div>

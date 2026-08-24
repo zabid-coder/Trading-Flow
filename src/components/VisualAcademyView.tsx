@@ -2,7 +2,7 @@ import { useState } from "react";
 import { STRATEGY_DEFINITIONS, StrategyDefinition, StrategyId } from "../engine/types";
 
 export default function VisualAcademyView() {
-  const [selectedStrategyId, setSelectedStrategyId] = useState<StrategyId>("sweep_reversal");
+  const [selectedStrategyId, setSelectedStrategyId] = useState<StrategyId>("creamer_4layer");
   const [direction, setDirection] = useState<"bullish" | "bearish">("bullish");
 
   const strat = STRATEGY_DEFINITIONS.find((s) => s.id === selectedStrategyId) || STRATEGY_DEFINITIONS[0];

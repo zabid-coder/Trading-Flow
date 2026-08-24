@@ -532,7 +532,7 @@ export default function ConsolePanel({ cfg, onCfg, onAoi, st, stats }: Props) {
                 </div>
               </div>
 
-              {/* Automation Toggles */}
+              {/* Automation & Strategy Toggles */}
               <div className="space-y-1 pt-1">
                 <Toggle
                   label="AUTO-PILOT EXECUTION (ALGO MODE)"
@@ -541,18 +541,58 @@ export default function ConsolePanel({ cfg, onCfg, onAoi, st, stats }: Props) {
                   onChange={() => onCfg({ actionCenter: !cfg.actionCenter })}
                 />
                 <Toggle
-                  label="AUTO BREAKEVEN"
-                  desc="Locks stop to entry once trade reaches +1.0R"
+                  label="AUTO BREAKEVEN (+1.2R)"
+                  desc="Locks stop to entry once trade reaches +1.2R"
                   on={cfg.autoBreakeven}
                   onChange={() => onCfg({ autoBreakeven: !cfg.autoBreakeven })}
                 />
                 <Toggle
-                  label="RSI EXHAUSTION"
-                  desc="Fades extreme momentum into S/R"
+                  label="1. CREAMER 4-LAYER OTE ENGINE"
+                  desc="GEX Environment + Fib OTE + Delta Absorption + 1:2.5R Risk"
+                  on={cfg.enabledStrategies.creamer_4layer}
+                  onChange={() =>
+                    onCfg({
+                      enabledStrategies: { ...cfg.enabledStrategies, creamer_4layer: !cfg.enabledStrategies.creamer_4layer },
+                    })
+                  }
+                />
+                <Toggle
+                  label="2. ASIAN FAKEOUT (GOLD SPECIAL)"
+                  desc="London Open sweep of 00:00-07:00 GMT Asian Range"
+                  on={cfg.enabledStrategies.asian_fakeout}
+                  onChange={() =>
+                    onCfg({
+                      enabledStrategies: { ...cfg.enabledStrategies, asian_fakeout: !cfg.enabledStrategies.asian_fakeout },
+                    })
+                  }
+                />
+                <Toggle
+                  label="3. 50-EMA TREND PULLBACK"
+                  desc="Dynamic 50-EMA trend retests with Pin Bar confirmation"
+                  on={cfg.enabledStrategies.ema_pullback}
+                  onChange={() =>
+                    onCfg({
+                      enabledStrategies: { ...cfg.enabledStrategies, ema_pullback: !cfg.enabledStrategies.ema_pullback },
+                    })
+                  }
+                />
+                <Toggle
+                  label="4. 14-PERIOD RSI EXHAUSTION"
+                  desc="Fades extreme momentum (<=28 / >=72) into key swing levels"
                   on={cfg.enabledStrategies.rsi_exhaustion}
                   onChange={() =>
                     onCfg({
                       enabledStrategies: { ...cfg.enabledStrategies, rsi_exhaustion: !cfg.enabledStrategies.rsi_exhaustion },
+                    })
+                  }
+                />
+                <Toggle
+                  label="5. SESSION BREAKOUT EXPANSION"
+                  desc="Volatility expansion breakout past session range buffers"
+                  on={cfg.enabledStrategies.session_breakout}
+                  onChange={() =>
+                    onCfg({
+                      enabledStrategies: { ...cfg.enabledStrategies, session_breakout: !cfg.enabledStrategies.session_breakout },
                     })
                   }
                 />

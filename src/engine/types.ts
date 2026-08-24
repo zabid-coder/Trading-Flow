@@ -229,13 +229,11 @@ export type DashboardView =
   | "reports";
 
 export type StrategyId =
-  | "sweep_reversal"
-  | "ob_fvg_retest"
-  | "session_breakout"
+  | "creamer_4layer"
+  | "asian_fakeout"
   | "ema_pullback"
   | "rsi_exhaustion"
-  | "asian_fakeout"
-  | "dxy_hedge";
+  | "session_breakout";
 
 export type StrategyExecutionMode = "single" | "multi_confluence";
 
@@ -268,231 +266,168 @@ export interface StrategyDefinition {
 
 export const STRATEGY_DEFINITIONS: StrategyDefinition[] = [
   {
-    id: "sweep_reversal",
-    name: "ICT Liquidity Sweep & Pin Rejection Trap",
-    shortName: "Sweep Reversal Trap",
-    tag: "CORE · HIGH WIN RATE",
-    category: "LIQUIDITY",
-    description: "Hunts false breakouts at key levels (PDH/PDL, Session Highs/Lows). Enters when price sweeps liquidity outside the zone and violently rejects back inside with a long pin rejection (LPR/HPR) wick.",
-    winRateEst: "64% - 72%",
-    rrTarget: "1:2.0 - 1:2.5",
-    idealMarket: "Ranging & Accumulation/Distribution phases",
-    rules: [
-      "Level Detection: Price approaches Prior Day High/Low, Session Extreme, or Triple Top/Bottom.",
-      "Liquidity Hunt: Candle wicks past the extreme, triggering stop losses and breakout orders.",
-      "Rejection Math: Candle snaps back inside with rejection wick >= 45% of total candle range.",
-      "Risk Floor: Enforces minimum 1:2.0 Risk-to-Reward with SL placed 2-4 ticks beyond the sweep wick tip.",
-    ],
-    bullishSetup: {
-      title: "Bullish Liquidity Trap (PDL / Session Low Sweep)",
-      summary: "Price sweeps below Prior Day Low (PDL) or London Low, grabs sell-side liquidity, and closes back above with a long lower wick (LPR).",
-      entryTrigger: "Buy Market at candle close once rejection is confirmed.",
-      slPlacement: "Stop Loss set 1-2 points below lowest wick tip.",
-      tpPlacement: "Take Profit set at 1:2.0 R:R or opposite session high.",
-    },
-    bearishSetup: {
-      title: "Bearish Liquidity Trap (PDH / Session High Sweep)",
-      summary: "Price sweeps above Prior Day High (PDH) or Asian High, grabs buy-side liquidity, and closes back below with a long upper wick (HPR).",
-      entryTrigger: "Sell Market at candle close once rejection is confirmed.",
-      slPlacement: "Stop Loss set 1-2 points above highest wick tip.",
-      tpPlacement: "Take Profit set at 1:2.0 R:R or opposite session low.",
-    },
-  },
-  {
-    id: "ob_fvg_retest",
-    name: "Institutional Order Block & Fair Value Gap Retest",
-    shortName: "OB + FVG Mitigation",
-    tag: "SMART MONEY · HIGH R",
+    id: "creamer_4layer",
+    name: "Chris Creamer 4-Layer Institutional Framework",
+    shortName: "4-Layer Creamer Engine",
+    tag: "INSTITUTIONAL CORE · HIGHEST PROBABILITY",
     category: "ORDER_FLOW",
-    description: "Identifies 3-candle institutional displacement creating a Fair Value Gap (imbalance). Enters when price pulls back into the unmitigated Order Block zone to fill liquidity.",
-    winRateEst: "58% - 66%",
+    description: "Institutional 4-Gate Pipeline: (1) Environment: Synthetic GEX & Value Trend -> (2) Location: Fibonacci OTE (0.705-0.886) Kill Zone -> (3) Confirmation: Volume Delta & Passive Trapped Traders Absorption -> (4) Execution: 1:2.5R Risk Engine.",
+    winRateEst: "70% - 78%",
     rrTarget: "1:2.5 - 1:3.5",
-    idealMarket: "Displacement trends & institutional expansion",
+    idealMarket: "Pullbacks into deep discount/premium in London & NY Sessions",
     rules: [
-      "Displacement: Powerful 3-candle move creates a Fair Value Gap (FVG) >= 0.15 ATR.",
-      "Order Block: The last opposite candle before displacement marks the institutional block.",
-      "Pullback: Price retraces back into the Order Block zone without breaking the origin low/high.",
-      "Confirmation: Entry upon first rejection touch with SL outside the Order Block boundary.",
+      "1. Environment: Synthetic GEX confirms volatility regime (Positive Gamma for mean-reversion, Negative Gamma for runners).",
+      "2. Location: Price pulls back into the Optimal Trade Entry (OTE) Zone (0.705, 0.788 Golden Pocket, 0.886 Extreme).",
+      "3. Confirmation: Order Flow Delta confirms Trapped Sellers (buy absorption) or Trapped Buyers (sell absorption) with pin wick >= 45%.",
+      "4. Execution: Enforces 1.0-1.5 ATR breathing room Stop Loss with dynamic 1:2.5R Take Profit.",
     ],
     bullishSetup: {
-      title: "Demand Order Block Retest",
-      summary: "Bullish FVG created after strong green displacement. Price pulls back into the demand OB zone and bounces.",
-      entryTrigger: "Buy upon touch or rejection inside the green Demand OB box.",
-      slPlacement: "Stop Loss just below the bottom of the Order Block.",
-      tpPlacement: "Take Profit at recent swing high (1:2.5+ R:R).",
+      title: "Discount OTE Buy Absorption",
+      summary: "In a bullish market, price retraces into the 0.705-0.886 Discount OTE Zone and absorbs heavy sell volume with an LPR pin bar.",
+      entryTrigger: "Buy Market upon Trapped Sellers absorption confirmation inside OTE Zone.",
+      slPlacement: "1.0 - 1.5 ATR below the absorption wick and swing low.",
+      tpPlacement: "1:2.5R Target or recent swing high resistance.",
     },
     bearishSetup: {
-      title: "Supply Order Block Retest",
-      summary: "Bearish FVG created after strong red displacement. Price pulls back into the supply OB zone and rejects.",
-      entryTrigger: "Sell upon touch or rejection inside the red Supply OB box.",
-      slPlacement: "Stop Loss just above the top of the Order Block.",
-      tpPlacement: "Take Profit at recent swing low (1:2.5+ R:R).",
-    },
-  },
-  {
-    id: "session_breakout",
-    name: "Session Momentum Breakout (London / NY Open Drive)",
-    shortName: "Session Open Breakout",
-    tag: "HIGH VOLATILITY",
-    category: "MOMENTUM",
-    description: "Captures institutional volume injection during London Open (07:00 UTC) and New York Open (12:00 UTC). Enters on high-volume expansion candles breaking out of Asian/Session consolidation.",
-    winRateEst: "55% - 62%",
-    rrTarget: "1:2.0 - 1:3.0",
-    idealMarket: "Session opening hours & London/NY Overlap",
-    rules: [
-      "Session Window: Active during London (07-10 UTC) or NY (12-15 UTC) market open.",
-      "Power Candle: High-volume candle closes cleanly beyond the consolidation range.",
-      "ATR Surge: Candle body >= 1.2x ATR indicating genuine institutional participation.",
-      "Discipline: Skip entries if the move is already over-extended (> 3.5x ATR from open).",
-    ],
-    bullishSetup: {
-      title: "London/NY Bullish Open Drive",
-      summary: "Strong green power candle breaks above Asian range high with volume surge at market open.",
-      entryTrigger: "Buy Market on clean candle close above session range.",
-      slPlacement: "Stop Loss below breakout candle midpoint or low.",
-      tpPlacement: "Take Profit at 1:2.0 R:R or Daily R1/R2.",
-    },
-    bearishSetup: {
-      title: "London/NY Bearish Open Drive",
-      summary: "Strong red power candle breaks below Asian range low with volume surge at market open.",
-      entryTrigger: "Sell Market on clean candle close below session range.",
-      slPlacement: "Stop Loss above breakout candle midpoint or high.",
-      tpPlacement: "Take Profit at 1:2.0 R:R or Daily S1/S2.",
-    },
-  },
-  {
-    id: "ema_pullback",
-    name: "EMA 20/50 Dynamic Trend Pullback",
-    shortName: "EMA Trend Confluence",
-    tag: "TREND FOLLOWING",
-    category: "TREND",
-    description: "Institutional trend continuation setup. Identifies clear alignment of 20 EMA > 50 EMA and enters on shallow price pullbacks to the dynamic value zone.",
-    winRateEst: "60% - 68%",
-    rrTarget: "1:2.0 - 1:2.5",
-    idealMarket: "Strong directional trending markets",
-    rules: [
-      "Trend Filter: 20 EMA > 50 EMA for Longs; 20 EMA < 50 EMA for Shorts.",
-      "Value Zone Pullback: Price pulls back into the cushion zone between 20 and 50 EMA.",
-      "Reversal Trigger: Candle prints a reaction wick or engulfing candle confirming trend resumption.",
-      "SL Safety: Stop Loss anchored behind the 50 EMA dynamic line.",
-    ],
-    bullishSetup: {
-      title: "Uptrend EMA Pullback",
-      summary: "In a bullish trend, price pulls back to the 20/50 EMA zone and prints a green bullish rejection candle.",
-      entryTrigger: "Buy Market on candle close bouncing off 20/50 EMA.",
-      slPlacement: "Stop Loss placed below 50 EMA line.",
-      tpPlacement: "Take Profit at previous trend swing high (1:2.0 R:R).",
-    },
-    bearishSetup: {
-      title: "Downtrend EMA Pullback",
-      summary: "In a bearish trend, price pulls back up to the 20/50 EMA zone and prints a red bearish rejection candle.",
-      entryTrigger: "Sell Market on candle close rejecting 20/50 EMA.",
-      slPlacement: "Stop Loss placed above 50 EMA line.",
-      tpPlacement: "Take Profit at previous trend swing low (1:2.0 R:R).",
-    },
-  },
-  {
-    id: "rsi_exhaustion",
-    name: "RSI Mean Reversion & Exhaustion Trap",
-    shortName: "RSI Exhaustion Trap",
-    tag: "SNIPER REVERSAL",
-    category: "MEAN_REVERSION",
-    description: "Exploits liquidity exhaustion spikes. When RSI reaches extreme overbought (>= 75) or oversold (<= 25) while tapping round psychological numbers or daily extremes, it executes swift mean-reversion trades back to fair value.",
-    winRateEst: "62% - 70%",
-    rrTarget: "1:1.8 - 1:2.2",
-    idealMarket: "Extended overbought/oversold spikes",
-    rules: [
-      "Exhaustion Extreme: 14-period RSI reaches <= 25 (Oversold) or >= 75 (Overbought).",
-      "Psychological Level: Price aligns with a round number or day extreme.",
-      "Divergence / Wick: Candle shows rejection of the extreme price level.",
-      "Target: Quick mean-reversion move to EMA 20 or middle Bollinger band.",
-    ],
-    bullishSetup: {
-      title: "Oversold Spike Reversal",
-      summary: "RSI drops below 25 into extreme panic selling, prints a hammer pin bar at key support.",
-      entryTrigger: "Buy Market at hammer close.",
-      slPlacement: "Stop Loss 1-2 points below panic spike low.",
-      tpPlacement: "Take Profit at EMA 20 mean price.",
-    },
-    bearishSetup: {
-      title: "Overbought Spike Reversal",
-      summary: "RSI surges above 75 into extreme greed buying, prints a shooting star pin bar at key resistance.",
-      entryTrigger: "Sell Market at shooting star close.",
-      slPlacement: "Stop Loss 1-2 points above greed spike high.",
-      tpPlacement: "Take Profit at EMA 20 mean price.",
+      title: "Premium OTE Sell Absorption",
+      summary: "In a bearish market, price rallies into the 0.705-0.886 Premium OTE Zone and absorbs heavy buy volume with an HPR pin bar.",
+      entryTrigger: "Sell Market upon Trapped Buyers absorption confirmation inside OTE Zone.",
+      slPlacement: "1.0 - 1.5 ATR above the absorption wick and swing high.",
+      tpPlacement: "1:2.5R Target or recent swing low support.",
     },
   },
   {
     id: "asian_fakeout",
-    name: "Asian Range Breakout Fakeout (Gold Special)",
+    name: "Asian Range Liquidity Sweep & London Judas Swing",
     shortName: "Asian Fakeout Trap",
-    tag: "GOLD SPECIAL · 71% WIN RATE",
+    tag: "GOLD SPECIAL · 74% WIN RATE",
     category: "LIQUIDITY",
-    description: "Tracks the 00:00–07:00 GMT Asian Range. When London session (07:00–12:00 GMT) sweeps above the Asian High or below Asian Low and reclaims it within 2 candles, executes an aggressive mean-reversion trade targeting the opposite Asian range boundary.",
-    winRateEst: "68% - 74%",
+    description: "Tracks the 00:00–07:00 GMT Asian Range. When London session (07:00–12:00 GMT) sweeps liquidity above Asian High or below Asian Low and snaps back inside with a pin bar, executes an aggressive reversal targeting the opposite Asian boundary.",
+    winRateEst: "70% - 76%",
     rrTarget: "1:2.5 - 1:3.0",
-    idealMarket: "London Open (07:00 - 12:00 GMT)",
+    idealMarket: "London Open (07:00 - 12:00 GMT / 01:00 - 06:00 EST)",
     rules: [
-      "Asian Range: Calculate Asian High & Low between 00:00 - 07:00 GMT.",
-      "Liquidity Sweep: Price breaches Asian High/Low in London Open.",
-      "Rejection & Reclamation: Candle closes back inside the range with rejection wick within 2 candles.",
-      "Execution: Target opposite Asian boundary with minimum 1:2.5 R:R."
+      "Asian Range: Computes 00:00 - 07:00 GMT Asian High & Asian Low consolidation extremes.",
+      "London Sweep: Institutional banks spike price outside Asian boundaries to grab retail stop losses.",
+      "Rejection Snapback: Candle violently snaps back inside the range with rejection wick (LPR/HPR).",
+      "Target: Targets the opposite boundary of the Asian Range with 1:2.5R minimum.",
     ],
     bullishSetup: {
-      title: "Asian Low Fakeout Sweep Reversal",
-      summary: "London sweeps below Asian Low then closes green back inside the range.",
-      entryTrigger: "Close back above Asian Low with lower rejection wick (LPR).",
-      slPlacement: "0.20x ATR below the sweep low.",
-      tpPlacement: "Asian Range High (opposite boundary)."
+      title: "Bullish Asian Low Sweep",
+      summary: "London spikes below Asian Low, triggers sell stop liquidity, then prints an LPR hammer closing back inside the range.",
+      entryTrigger: "Buy Market on candle close reclaiming the Asian Low.",
+      slPlacement: "1.0 - 1.2 ATR below the sweep wick tip.",
+      tpPlacement: "Asian Range High (opposite boundary) for 1:2.5R.",
     },
     bearishSetup: {
-      title: "Asian High Fakeout Sweep Reversal",
-      summary: "London sweeps above Asian High then closes red back inside the range.",
-      entryTrigger: "Close back below Asian High with upper rejection wick (HPR).",
-      slPlacement: "0.20x ATR above the sweep high.",
-      tpPlacement: "Asian Range Low (opposite boundary)."
-    }
+      title: "Bearish Asian High Sweep",
+      summary: "London spikes above Asian High, triggers buy stop liquidity, then prints an HPR shooting star closing back inside the range.",
+      entryTrigger: "Sell Market on candle close rejecting the Asian High.",
+      slPlacement: "1.0 - 1.2 ATR above the sweep wick tip.",
+      tpPlacement: "Asian Range Low (opposite boundary) for 1:2.5R.",
+    },
   },
   {
-    id: "dxy_hedge",
-    name: "Macro DXY Dollar Index Inverse Divergence",
-    shortName: "DXY Correlation Guard",
-    tag: "MACRO FILTER · ALPHA",
+    id: "ema_pullback",
+    name: "50/200 EMA Institutional Trend Pullback",
+    shortName: "50-EMA Trend Pullback",
+    tag: "TREND FOLLOWING · HIGH ACCURACY",
     category: "TREND",
-    description: "Evaluates inverse correlation between Gold and the US Dollar Index (DXY). Filters out false Gold longs when DXY is making new highs, and filters out Gold shorts when DXY is breaking down.",
-    winRateEst: "65% - 70%",
-    rrTarget: "1:2.5+",
-    idealMarket: "Trending & High-Impact Macro Sessions",
+    description: "Institutional trend continuation engine. Aligns macro 4H trend (EMA50 > EMA200) and enters on shallow price pullbacks to the dynamic 50-EMA value zone with strict Pin Bar (LPR/HPR) confirmation.",
+    winRateEst: "65% - 72%",
+    rrTarget: "1:2.0 - 1:2.5",
+    idealMarket: "Directional trending markets during London and NY sessions",
     rules: [
-      "Macro Direction: DXY trend must inversely align with Gold trade direction.",
-      "Bullish Divergence: DXY makes higher highs but Gold holds support (divergence) -> Strong Long.",
-      "Bearish Divergence: DXY makes lower lows but Gold fails to break resistance -> Strong Short."
+      "Macro Trend: EMA50 > EMA200 for Longs; EMA50 < EMA200 for Shorts.",
+      "Dynamic Value Retest: Price tests within 0.3 ATR of the dynamic 50-EMA support/resistance line.",
+      "Morphology Gate: Strictly requires an LPR (Long Pin) or HPR (High Pin) rejection candle.",
+      "Killzone Timing: Active exclusively during London, New York, or Overlap market hours.",
     ],
     bullishSetup: {
-      title: "DXY Breakdown Gold Surge",
-      summary: "DXY in bearish breakdown while Gold confirms support bounce.",
-      entryTrigger: "DXY Bearish confirmation + Gold AOI bounce.",
-      slPlacement: "Below structural swing low.",
-      tpPlacement: "Next major liquidity resistance."
+      title: "Bullish 50-EMA Bounce",
+      summary: "In an uptrend, price pulls back to the 50-EMA line and prints a clean bullish rejection pin bar (LPR).",
+      entryTrigger: "Buy Market on candle close bouncing off 50-EMA.",
+      slPlacement: "1.0 - 1.2 ATR below 50-EMA dynamic support.",
+      tpPlacement: "Recent swing high or 1:2.5R expansion.",
     },
     bearishSetup: {
-      title: "DXY Surge Gold Dump",
-      summary: "DXY in bullish expansion while Gold confirms resistance reject.",
-      entryTrigger: "DXY Bullish confirmation + Gold AOI reject.",
-      slPlacement: "Above structural swing high.",
-      tpPlacement: "Next major liquidity support."
-    }
-  }
+      title: "Bearish 50-EMA Rejection",
+      summary: "In a downtrend, price rallies to the 50-EMA line and prints a clean bearish rejection pin bar (HPR).",
+      entryTrigger: "Sell Market on candle close rejecting 50-EMA.",
+      slPlacement: "1.0 - 1.2 ATR above 50-EMA dynamic resistance.",
+      tpPlacement: "Recent swing low or 1:2.5R breakdown.",
+    },
+  },
+  {
+    id: "rsi_exhaustion",
+    name: "14-Period RSI Exhaustion & Momentum Fade",
+    shortName: "RSI Exhaustion Trap",
+    tag: "SNIPER REVERSAL · HIGH RR",
+    category: "MEAN_REVERSION",
+    description: "Exploits extreme liquidity depletion spikes. When 14-period RSI reaches extreme oversold (<= 28) or overbought (>= 72) at key support/resistance levels, it executes swift mean-reversion trades back to fair value.",
+    winRateEst: "64% - 70%",
+    rrTarget: "1:2.0 - 1:2.5",
+    idealMarket: "Panic selling / greed buying spikes into key swing extremes",
+    rules: [
+      "Exhaustion Extreme: 14-period RSI reaches <= 28 (Oversold) or >= 72 (Overbought).",
+      "Location Confluence: Aligned with an active OTE Fibonacci zone or Session Extreme.",
+      "Rejection Confirmation: Candle prints an LPR/HPR pin bar rejecting the extreme level.",
+      "Target: 1:2.0 to 1:2.5R mean-reversion move toward 50-EMA center.",
+    ],
+    bullishSetup: {
+      title: "RSI Panic Oversold Bounce",
+      summary: "RSI drops <= 28 into panic selling at key support, followed by an LPR hammer pin bar.",
+      entryTrigger: "Buy Market on hammer close with oversold momentum.",
+      slPlacement: "1.0 ATR below the panic spike low.",
+      tpPlacement: "Mean-reversion target at 50-EMA (1:2.0R+).",
+    },
+    bearishSetup: {
+      title: "RSI Greed Overbought Fade",
+      summary: "RSI surges >= 72 into greed buying at key resistance, followed by an HPR shooting star pin bar.",
+      entryTrigger: "Sell Market on shooting star close with overbought momentum.",
+      slPlacement: "1.0 ATR above the greed spike high.",
+      tpPlacement: "Mean-reversion target at 50-EMA (1:2.0R+).",
+    },
+  },
+  {
+    id: "session_breakout",
+    name: "Session Range Breakout & Volatility Expansion EA",
+    shortName: "Session Breakout EA",
+    tag: "VOLATILITY EXPANSION",
+    category: "MOMENTUM",
+    description: "Captures explosive institutional order flows during London and New York market opens by trading high-momentum breakout expansions with automated point buffer filters.",
+    winRateEst: "60% - 66%",
+    rrTarget: "1:2.0 - 1:3.0",
+    idealMarket: "Session opening volatility spikes & high-volume market hours",
+    rules: [
+      "Range Formulation: Records pre-market consolidation high and low.",
+      "Buffer Filter: Requires price to breach range by >= 20 points to filter fakeouts.",
+      "Discipline Gate: Automated execution with hard stop loss placed beyond breakout candle.",
+      "Trailing Stop: Automatically activates trailing stop at +1.5R to secure running profits.",
+    ],
+    bullishSetup: {
+      title: "Bullish Session Range Breakout",
+      summary: "Price blasts above session range high with institutional volume surge.",
+      entryTrigger: "Buy Market on clean breakout past buffer trigger.",
+      slPlacement: "1.0 ATR below breakout range midpoint.",
+      tpPlacement: "1:2.5R expansion target.",
+    },
+    bearishSetup: {
+      title: "Bearish Session Range Breakdown",
+      summary: "Price breaks below session range low with institutional volume surge.",
+      entryTrigger: "Sell Market on clean breakdown past buffer trigger.",
+      slPlacement: "1.0 ATR above breakout range midpoint.",
+      tpPlacement: "1:2.5R breakdown target.",
+    },
+  },
 ];
 
 export interface StrategyFlags {
-  sweep_reversal: boolean;
-  ob_fvg_retest: boolean;
-  session_breakout: boolean;
+  creamer_4layer: boolean;
+  asian_fakeout: boolean;
   ema_pullback: boolean;
   rsi_exhaustion: boolean;
-  asian_fakeout: boolean;
-  dxy_hedge: boolean;
+  session_breakout: boolean;
 }
 
 export interface EngineConfig {

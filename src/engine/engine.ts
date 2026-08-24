@@ -15,16 +15,14 @@ const BASE_T = Date.UTC(2025, 2, 3, 0, 0, 0); // simulated feed epoch
 
 export const DEFAULT_CFG: EngineConfig = {
   identity: "reversal",
-  selectedStrategy: "sweep_reversal",
+  selectedStrategy: "creamer_4layer",
   strategyMode: "single",
   enabledStrategies: {
-    sweep_reversal: true,
-    ob_fvg_retest: true,
-    session_breakout: true,
+    creamer_4layer: true,
+    asian_fakeout: true,
     ema_pullback: true,
     rsi_exhaustion: true,
-    asian_fakeout: true,
-    dxy_hedge: true,
+    session_breakout: true,
   },
   minConfluenceCount: 2,
   account: 1000,
@@ -1104,6 +1102,42 @@ function evaluate(st: EngineState, cfg: EngineConfig, bar: Bar, cls: CandleClass
     totalConfluenceScore: Math.min(100, creamerScore),
     isSetupReady: inOteZone && absorption !== "NONE" && creamerScore >= 70,
   };
+
+  // --- CHRIS CREAMER 4-LAYER INSTITUTIONAL EXECUTION TRIGGER ---
+  if (cfg.enabledStrategies.creamer_4layer && st.creamerFramework.isSetupReady && !st.open) {
+    const cfCd = st.cooldown["CREAMER_4LAYER"];
+    const canCf = cfCd == null || idx - cfCd >= 16;
+    if (canCf) {
+      const cfSide = st.creamerFramework.oteZoneType === "DISCOUNT_BUY" ? "LONG" : "SHORT";
+      const cfAoi: Aoi = {
+        kind: cfSide === "LONG" ? "TB" : "TT",
+        role: cfSide === "LONG" ? "S" : "R",
+        y1: bar.c,
+        y2: bar.c,
+        ty: bar.c,
+        from: idx,
+        label: `4-LAYER OTE (${st.creamerFramework.oteZoneType.replace("_", " ")})`,
+        active: true,
+      };
+
+      const entered = cfg.actionCenter
+        ? enqueueSignal(st, cfg, bar, cfSide, cfAoi, "CREAMER_4LAYER")
+        : openTrade(st, cfg, bar, cfSide, cfAoi, "CREAMER_4LAYER");
+
+      if (entered) {
+        setEval(
+          [
+            { k: "ENVIRONMENT", ok: true, v: `GEX ${st.creamerFramework.gexState.replace("_GAMMA", "")}` },
+            { k: "LOCATION", ok: true, v: `OTE ${st.creamerFramework.fib788}` },
+            { k: "CONFIRMATION", ok: true, v: st.creamerFramework.absorption.replace(/_/g, " ") },
+            { k: "EXECUTION", ok: true, v: `${cfSide} @ ${fmtP(bar.c)} (1:2.5R)` },
+          ],
+          `🎯 Chris Creamer 4-Layer Institutional Execution Triggered! All 4 Gates (Environment, Location OTE, Absorption, Risk) Confirmed.`
+        );
+        return;
+      }
+    }
+  }
 
   // --- RANGE BREAKOUT EA LOGIC ---
   if (cfg.rbEnabled && (st.rbState === "ACTIVE" || st.rbState === "FORMING") && st.rbHigh != null && st.rbLow != null) {
