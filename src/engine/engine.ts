@@ -1430,18 +1430,19 @@ function evaluate(st: EngineState, cfg: EngineConfig, bar: Bar, cls: CandleClass
     if (longs.length && cls === "LPR") {
       chosen = longs.reduce((m, s) => (s.dist > m.dist ? s : m), longs[0]);
 
-      // Filter 2: Trend direction — block counter-trend longs in bear regime
-      if (cfg.trendFilter && st.ema50 < st.ema200 && bar.c < st.ema50) {
+      // Filter 2: Trend direction — strictly block counter-trend longs in bear regime
+      const isBearRegime = st.regime === "STRONG_BEAR" || st.regime === "TRENDING_BEAR" || (cfg.trendFilter && st.ema50 < st.ema200);
+      if (isBearRegime) {
         const score = scoreCandidate(chosen, "LONG");
         st.lastConfluenceScore = score;
         setEval(
           [
             { k: "AOI CONTACT", ok: true, v: `${chosen.a.label} swept` },
-            { k: "TREND", ok: false, v: `BEARISH (EMA50 < EMA200)` },
+            { k: "TREND", ok: false, v: "BEARISH REGIME (50 EMA < 200 EMA)" },
             { k: "CONFLUENCE", ok: false, v: `${score}/100 — LONG blocked` },
-            { k: "GATE", ok: false, v: "counter-trend" },
+            { k: "GATE", ok: false, v: "counter-trend long blocked" },
           ],
-          `${chosen.a.label} swept with LPR rejection, but macro trend is bearish (50 EMA < 200 EMA). Counter-trend LONG blocked.`
+          `${chosen.a.label} swept with LPR rejection, but macro regime is bearish. Counter-trend LONG blocked.`
         );
         chosen = null;
       }
@@ -1468,18 +1469,19 @@ function evaluate(st: EngineState, cfg: EngineConfig, bar: Bar, cls: CandleClass
     } else if (shorts.length && cls === "HPR") {
       chosen = shorts.reduce((m, s) => (s.dist > m.dist ? s : m), shorts[0]);
 
-      // Filter 2: Trend direction — block counter-trend shorts in bull regime
-      if (cfg.trendFilter && st.ema50 > st.ema200 && bar.c > st.ema50) {
+      // Filter 2: Trend direction — strictly block counter-trend shorts in bull regime
+      const isBullRegime = st.regime === "STRONG_BULL" || st.regime === "TRENDING_BULL" || (cfg.trendFilter && st.ema50 > st.ema200);
+      if (isBullRegime) {
         const score = scoreCandidate(chosen, "SHORT");
         st.lastConfluenceScore = score;
         setEval(
           [
             { k: "AOI CONTACT", ok: true, v: `${chosen.a.label} swept` },
-            { k: "TREND", ok: false, v: `BULLISH (EMA50 > EMA200)` },
+            { k: "TREND", ok: false, v: "BULLISH REGIME (50 EMA > 200 EMA)" },
             { k: "CONFLUENCE", ok: false, v: `${score}/100 — SHORT blocked` },
-            { k: "GATE", ok: false, v: "counter-trend" },
+            { k: "GATE", ok: false, v: "counter-trend short blocked" },
           ],
-          `${chosen.a.label} swept with HPR rejection, but macro trend is bullish (50 EMA > 200 EMA). Counter-trend SHORT blocked.`
+          `${chosen.a.label} swept with HPR rejection, but macro regime is bullish. Counter-trend SHORT blocked.`
         );
         chosen = null;
       }
