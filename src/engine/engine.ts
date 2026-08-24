@@ -9,7 +9,7 @@ import type {
   SessionLevels,
   Trade,
 } from "./types";
-import { DAY_NAMES, defaultWindowGrid, fmtP, windowParts } from "./types";
+import { DAY_NAMES, defaultWindowGrid, fmtP, fmtUSD, windowParts } from "./types";
 
 const BASE_T = Date.UTC(2025, 2, 3, 0, 0, 0); // simulated feed epoch
 
@@ -303,26 +303,53 @@ function manage(st: EngineState, cfg: EngineConfig, bar: Bar) {
   const t = st.open;
   if (!t) return;
   const half = cfg.spread / 2;
-  const atr = st.atr || 1.0;
+  const atr = st.atr || 2.5;
 
-  // 1. Check Exit conditions (SL and TP)
+  // 1. Check Exit conditions (SL and TP) with realistic intrabar direction priority
   if (t.side === "LONG") {
-    if (bar.l - half <= t.sl) {
-      settle(st, cfg, t, bar, "SL", t.sl);
-      return;
-    }
-    if (bar.h - half >= t.tp) {
-      settle(st, cfg, t, bar, "TP", t.tp);
-      return;
+    if (bar.c >= bar.o) {
+      // Bullish candle: check TP expansion first
+      if (bar.h - half >= t.tp) {
+        settle(st, cfg, t, bar, "TP", t.tp);
+        return;
+      }
+      if (bar.l - half <= t.sl) {
+        settle(st, cfg, t, bar, "SL", t.sl);
+        return;
+      }
+    } else {
+      // Bearish candle: check SL breakdown first
+      if (bar.l - half <= t.sl) {
+        settle(st, cfg, t, bar, "SL", t.sl);
+        return;
+      }
+      if (bar.h - half >= t.tp) {
+        settle(st, cfg, t, bar, "TP", t.tp);
+        return;
+      }
     }
   } else {
-    if (bar.h + half >= t.sl) {
-      settle(st, cfg, t, bar, "SL", t.sl);
-      return;
-    }
-    if (bar.l + half <= t.tp) {
-      settle(st, cfg, t, bar, "TP", t.tp);
-      return;
+    // SHORT side
+    if (bar.c <= bar.o) {
+      // Bearish candle: check TP drop first
+      if (bar.l + half <= t.tp) {
+        settle(st, cfg, t, bar, "TP", t.tp);
+        return;
+      }
+      if (bar.h + half >= t.sl) {
+        settle(st, cfg, t, bar, "SL", t.sl);
+        return;
+      }
+    } else {
+      // Bullish candle: check SL rally first
+      if (bar.h + half >= t.sl) {
+        settle(st, cfg, t, bar, "SL", t.sl);
+        return;
+      }
+      if (bar.l + half <= t.tp) {
+        settle(st, cfg, t, bar, "TP", t.tp);
+        return;
+      }
     }
   }
 
@@ -500,6 +527,9 @@ function openTrade(
   cooldownKey: string,
   familyOverride?: string
 ) {
+  // CRITICAL GATE: Only 1 position at a time & discipline halt
+  if (st.open || st.halted) return false;
+
   const idx = st.bars.length - 1;
   const plan = planTrade(st, cfg, bar, side, st.atr);
   if (!plan) return false;
@@ -545,6 +575,8 @@ function enqueueSignal(
   a: Aoi,
   cooldownKey: string
 ): boolean {
+  // CRITICAL GATE: No new signals if position is open or daily limit reached
+  if (st.open || st.halted) return false;
   if (st.queue.some((q) => q.status === "PENDING")) return false; // one decision at a time
   const plan = planTrade(st, cfg, bar, side, st.atr);
   if (!plan) return false;
@@ -856,6 +888,36 @@ function evaluate(st: EngineState, cfg: EngineConfig, bar: Bar, cls: CandleClass
     }
     return null;
   };
+
+  // Gate 0: Discipline lock & active position management check
+  if (st.halted) {
+    setEval(
+      [
+        { k: "DISCIPLINE LOCK", ok: false, v: `${st.dailySL}/${cfg.maxDailySL} Daily SL` },
+        { k: "STATUS", ok: false, v: "HALTED FOR SESSION" },
+      ],
+      `Daily Stop Loss limit (${st.dailySL}/${cfg.maxDailySL}) reached. Trading halted to preserve capital.`
+    );
+    return;
+  }
+
+  if (st.open) {
+    const t = st.open as Trade;
+    const half = cfg.spread / 2;
+    const curPnl = t.side === "LONG"
+      ? t.oz * (bar.c - half - t.entry)
+      : t.oz * (t.entry - (bar.c + half));
+    setEval(
+      [
+        { k: "ACTIVE POSITION", ok: true, v: `${t.side} ${t.oz.toFixed(2)} units` },
+        { k: "ENTRY", ok: true, v: fmtP(t.entry) },
+        { k: "CURRENT P&L", ok: curPnl >= 0, v: fmtUSD(curPnl, true, 2) },
+        { k: "TP / SL", ok: true, v: `${fmtP(t.tp)} / ${fmtP(t.sl)}` },
+      ],
+      `Position active: ${t.side} @ ${fmtP(t.entry)} · P&L ${fmtUSD(curPnl, true, 2)}. Managing trade toward 1:${cfg.rr.toFixed(1)}R target.`
+    );
+    return;
+  }
 
   const newsEvent = checkUpcomingNews(bar.t);
   st.upcomingNews = newsEvent;
