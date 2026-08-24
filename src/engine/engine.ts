@@ -53,11 +53,12 @@ export const DEFAULT_CFG: EngineConfig = {
   trailThresholdR: 2.2,
   trailAtrDist: 1.2,
   slippagePoints: 0.10,
-  minSlAtr: 0.2,
-  maxSlAtr: 4.0,
+  minSlAtr: 1.0,
+  maxSlAtr: 3.5,
   trendFilter: true,
   killzoneFilter: true,
   confluenceGate: 75,
+  maxDailyTrades: 3,
   rbEnabled: false,
   rbStartH: 7,
   rbStartM: 0,
@@ -465,16 +466,16 @@ function planTrade(st: EngineState, cfg: EngineConfig, bar: Bar, side: "LONG" | 
   const entry = side === "LONG" ? bar.c + half : bar.c - half;
 
   // Institutional Stop Distance: Give trade proper breathing room (at least 1.0 - 1.5 ATR) so noise doesn't trigger SL
-  const minStopBuffer = isGold ? 2.8 : 0.002;
-  const buffer = Math.max(0.85 * effAtr, minStopBuffer);
+  const minStopBuffer = isGold ? 3.0 : 0.0025;
+  const buffer = Math.max(1.15 * effAtr, minStopBuffer);
   const sl = side === "LONG"
-    ? Math.min(bar.l - 0.3 * effAtr, entry - buffer)
-    : Math.max(bar.h + 0.3 * effAtr, entry + buffer);
+    ? Math.min(bar.l - 0.35 * effAtr, entry - buffer)
+    : Math.max(bar.h + 0.35 * effAtr, entry + buffer);
   const slDist = Math.abs(entry - sl);
 
-  const minSl = Math.max(minStopBuffer, (cfg.minSlAtr || 0.6) * effAtr);
-  const maxSl = (cfg.maxSlAtr || 4.5) * effAtr;
-  if (slDist < minSl * 0.8 || slDist > maxSl) return null;
+  const minSl = Math.max(minStopBuffer, (cfg.minSlAtr || 1.0) * effAtr);
+  const maxSl = (cfg.maxSlAtr || 3.5) * effAtr;
+  if (slDist < minSl * 0.85 || slDist > maxSl) return null;
 
   // Anti-Streak Drawdown Protection: Throttle risk after consecutive losses
   const closedTrades = st.trades.filter((t) => !t.open);
@@ -521,8 +522,9 @@ function openTrade(
   cooldownKey: string,
   familyOverride?: string
 ) {
-  // CRITICAL GATE: Only 1 position at a time & discipline halt
-  if (st.open || st.halted) return false;
+  // CRITICAL GATE: Only 1 position at a time & discipline halt & daily trade cap
+  const maxTrades = cfg.maxDailyTrades ?? 3;
+  if (st.open || st.halted || (st.dailyTradesCount || 0) >= maxTrades) return false;
 
   const idx = st.bars.length - 1;
   const plan = planTrade(st, cfg, bar, side, st.atr);
@@ -552,6 +554,7 @@ function openTrade(
   };
   st.open = t;
   st.trades.push(t);
+  st.dailyTradesCount = (st.dailyTradesCount || 0) + 1;
   st.cooldown[cooldownKey] = idx;
 
   ev(st, bar.t, "ENTRY", side === "LONG" ? "long" : "short",
@@ -570,7 +573,8 @@ function enqueueSignal(
   cooldownKey: string
 ): boolean {
   // CRITICAL GATE: No new signals if position is open or daily limit reached
-  if (st.open || st.halted) return false;
+  const maxTrades = cfg.maxDailyTrades ?? 3;
+  if (st.open || st.halted || (st.dailyTradesCount || 0) >= maxTrades) return false;
   if (st.queue.some((q) => q.status === "PENDING")) return false; // one decision at a time
   const plan = planTrade(st, cfg, bar, side, st.atr);
   if (!plan) return false;
@@ -883,7 +887,32 @@ function evaluate(st: EngineState, cfg: EngineConfig, bar: Bar, cls: CandleClass
     return null;
   };
 
-  // Gate 0: Discipline lock & active position management check
+  // Gate 0A: Daily Trade Count Limit (Max 2-3 trades per day to prevent overtrading)
+  const maxTrades = cfg.maxDailyTrades ?? 3;
+  if ((st.dailyTradesCount || 0) >= maxTrades) {
+    setEval(
+      [
+        { k: "DAILY TRADE CAP", ok: false, v: `${st.dailyTradesCount}/${maxTrades} Max Reached` },
+        { k: "STATUS", ok: false, v: "DAILY TARGET MET · STANDING DOWN" },
+      ],
+      `Daily trade cap of ${maxTrades} trades reached. Preserving capital and standing down until next session day.`
+    );
+    return;
+  }
+
+  // Gate 0B: Killzone Session Gate (London 07:00–12:00 & NY 12:00–17:00 UTC only)
+  if (cfg.killzoneFilter && (st.activeKillzone === "OFF_SESSION" || hourOf(bar.t) < 7 || hourOf(bar.t) >= 17)) {
+    setEval(
+      [
+        { k: "SESSION STATUS", ok: false, v: `OFF-SESSION (${String(hourOf(bar.t)).padStart(2, "0")}:00 UTC)` },
+        { k: "KILLZONE GATE", ok: false, v: "NO ENTRIES OUTSIDE LONDON/NY" },
+      ],
+      "Off-session dead zone (17:00–07:00 UTC). Smart money is absent — strictly no entries outside London and NY killzones."
+    );
+    return;
+  }
+
+  // Gate 0C: Discipline lock & active position management check
   if (st.halted) {
     setEval(
       [
@@ -957,8 +986,8 @@ function evaluate(st: EngineState, cfg: EngineConfig, bar: Bar, cls: CandleClass
   ) {
     const aRange = st.asianHigh - st.asianLow;
     if (aRange >= 0.5 * atr) {
-      // Bullish Asian Fakeout: Price broke Asian Low but swept and closed back above Asian Low
-      if (bar.l < st.asianLow && bar.c > st.asianLow && (cls === "LPR" || cls === "NEUTRAL")) {
+      // Bullish Asian Fakeout: Price broke Asian Low but swept and closed back above Asian Low with LPR hammer pin bar
+      if (bar.l < st.asianLow && bar.c > st.asianLow && cls === "LPR") {
         const fakeoutAoi: Aoi = {
           kind: "LON_L",
           role: "S",
@@ -984,17 +1013,18 @@ function evaluate(st: EngineState, cfg: EngineConfig, bar: Bar, cls: CandleClass
           setEval(
             [
               { k: "ASIAN FAKEOUT", ok: true, v: `Asian Low Swept & Reclaimed` },
+              { k: "REACTION", ok: true, v: "LPR Bullish Hammer" },
               { k: "TARGET", ok: true, v: `Asian High ${fmtP(st.asianHigh)}` },
               { k: "EXECUTION", ok: true, v: `LONG @ ${fmtP(bar.c)}` },
             ],
-            `Institutional Asian Range Fakeout triggered LONG! London swept Asian Low (${fmtP(st.asianLow)}) and snapped back inside. Target: Asian High (${fmtP(st.asianHigh)}).`
+            `Institutional Asian Range Fakeout triggered LONG! London swept Asian Low (${fmtP(st.asianLow)}) and snapped back inside with clean LPR rejection. Target: Asian High (${fmtP(st.asianHigh)}).`
           );
           return;
         }
       }
 
-      // Bearish Asian Fakeout: Price broke Asian High but swept and closed back below Asian High
-      if (bar.h > st.asianHigh && bar.c < st.asianHigh && (cls === "HPR" || cls === "NEUTRAL")) {
+      // Bearish Asian Fakeout: Price broke Asian High but swept and closed back below Asian High with HPR shooting star
+      if (bar.h > st.asianHigh && bar.c < st.asianHigh && cls === "HPR") {
         const fakeoutAoi: Aoi = {
           kind: "LON_H",
           role: "R",
@@ -1020,10 +1050,11 @@ function evaluate(st: EngineState, cfg: EngineConfig, bar: Bar, cls: CandleClass
           setEval(
             [
               { k: "ASIAN FAKEOUT", ok: true, v: `Asian High Swept & Reclaimed` },
+              { k: "REACTION", ok: true, v: "HPR Bearish Shooting Star" },
               { k: "TARGET", ok: true, v: `Asian Low ${fmtP(st.asianLow)}` },
               { k: "EXECUTION", ok: true, v: `SHORT @ ${fmtP(bar.c)}` },
             ],
-            `Institutional Asian Range Fakeout triggered SHORT! London swept Asian High (${fmtP(st.asianHigh)}) and rejected back inside. Target: Asian Low (${fmtP(st.asianLow)}).`
+            `Institutional Asian Range Fakeout triggered SHORT! London swept Asian High (${fmtP(st.asianHigh)}) and rejected back inside with clean HPR rejection. Target: Asian Low (${fmtP(st.asianLow)}).`
           );
           return;
         }
@@ -1041,10 +1072,14 @@ function evaluate(st: EngineState, cfg: EngineConfig, bar: Bar, cls: CandleClass
   st.dxyTrend = h4Trend === "BULLISH" ? "BEARISH" : "BULLISH";
   st.dxyValue = Number((104.25 + (h4Trend === "BEARISH" ? 0.85 : -0.75)).toFixed(2));
 
-  // Multi-Timeframe Alignment Scorer
+  // Multi-Timeframe Alignment Scorer (Strict Institutional Confluence Scoring)
   const m15State = nearAoi ? "AOI_TEST" : "CHOP";
   const m5State = cls === "LPR" ? "LPR" : cls === "HPR" ? "HPR" : "NEUTRAL";
-  const mtcScore = (h4Trend === "BULLISH" ? 35 : 15) + (nearAoi ? 35 : 10) + (cls === "LPR" || cls === "HPR" ? 30 : 10);
+  let mtcScore = 0;
+  if (st.activeKillzone === "LONDON" || st.activeKillzone === "NEW_YORK" || st.activeKillzone === "OVERLAP") mtcScore += 30;
+  if (nearAoi) mtcScore += 30;
+  if (cls === "LPR" || cls === "HPR") mtcScore += 25;
+  if ((h4Trend === "BULLISH" && cls === "LPR") || (h4Trend === "BEARISH" && cls === "HPR")) mtcScore += 15;
 
   st.mtcAlignment = {
     h4: h4Trend,
@@ -1485,7 +1520,7 @@ function evaluate(st: EngineState, cfg: EngineConfig, bar: Bar, cls: CandleClass
         }
       }
 
-      // 2. RSI Exhaustion Mean-Reversion Strategy (Requires extreme RSI <= 28 or >= 72 + LPR/HPR Rejection)
+      // 2. RSI Exhaustion Mean-Reversion Strategy (Requires extreme RSI <= 25 or >= 75 + LPR/HPR Rejection)
       if (!secondaryEntered && cfg.enabledStrategies.rsi_exhaustion && idx >= 20) {
         let gains = 0, losses = 0;
         const rsiPeriod = 14;
@@ -1499,8 +1534,8 @@ function evaluate(st: EngineState, cfg: EngineConfig, bar: Bar, cls: CandleClass
         const curRsi = 100 - 100 / (1 + rs);
 
         const rsiCd = st.cooldown["RSI_EXHAUSTION"];
-        const canRsi = (rsiCd == null || idx - rsiCd >= 18) && (st.creamerFramework?.inOteZone || st.activeKillzone !== "OFF_SESSION");
-        if (canRsi && curRsi <= 28 && cls === "LPR") {
+        const canRsi = (rsiCd == null || idx - rsiCd >= 20) && (st.activeKillzone === "LONDON" || st.activeKillzone === "NEW_YORK" || st.activeKillzone === "OVERLAP");
+        if (canRsi && curRsi <= 25 && cls === "LPR") {
           const rsiAoi: Aoi = {
             kind: "TB",
             role: "S",
@@ -1523,7 +1558,7 @@ function evaluate(st: EngineState, cfg: EngineConfig, bar: Bar, cls: CandleClass
             );
             return;
           }
-        } else if (canRsi && curRsi >= 72 && cls === "HPR") {
+        } else if (canRsi && curRsi >= 75 && cls === "HPR") {
           const rsiAoi: Aoi = {
             kind: "TT",
             role: "R",
@@ -1682,6 +1717,7 @@ export function advance(st: EngineState, cfg: EngineConfig) {
     st.dayHigh = -1e9;
     st.dayLow = 1e9;
     st.dailySL = 0;
+    st.dailyTradesCount = 0;
     st.halted = false;
   }
 
@@ -1788,6 +1824,7 @@ export function createEngine(seed: number, cfg: EngineConfig): EngineState {
     pdl: null,
     ses: null,
     dailySL: 0,
+    dailyTradesCount: 0,
     halted: false,
     open: null,
     trades: [],
@@ -1869,6 +1906,7 @@ export function createLiveEngine(symbol: string, initialBars: Bar[], cfg: Engine
     pdl: null,
     ses: null,
     dailySL: 0,
+    dailyTradesCount: 0,
     halted: false,
     open: null,
     trades: [],

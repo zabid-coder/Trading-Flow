@@ -469,6 +469,7 @@ export interface EngineConfig {
   trendFilter: boolean; // 50/200 EMA trend regime filter
   killzoneFilter: boolean; // London & NY killzone session filter
   confluenceGate: number; // minimum confluence score out of 100 (default 75)
+  maxDailyTrades: number; // maximum trades per day limit (default 3 to prevent overtrading)
   // Range Breakout EA Configs
   rbEnabled: boolean;
   rbStartH: number;
@@ -518,6 +519,7 @@ export interface EngineState {
   pdl: number | null;
   ses: SessionLevels | null;
   dailySL: number;
+  dailyTradesCount: number;
   halted: boolean;
   open: Trade | null;
   trades: Trade[];
