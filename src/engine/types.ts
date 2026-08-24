@@ -574,7 +574,17 @@ export interface EngineState {
     impact: "HIGH" | "MEDIUM";
     minutesUntil: number;
     isCooldownActive: boolean;
+    spreadMultiplier?: number;
   } | null;
+
+  // Institutional Volume Profile & Dynamic Spread
+  volumeProfile?: {
+    poc: number;
+    vah: number;
+    val: number;
+    pocTested: boolean;
+  };
+  effectiveSpread?: number;
 
   // Chris Creamer 4-Pillar Free Institutional Architecture
   creamerFramework?: {

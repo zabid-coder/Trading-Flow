@@ -449,6 +449,46 @@ function familyOf(kind: Aoi["kind"]): string {
   return "SESSIONS";
 }
 
+function computeVolumeProfile(bars: Bar[], lookback: number = 32): { poc: number; vah: number; val: number; pocTested: boolean } {
+  if (!bars || bars.length < 5) {
+    const p = bars[bars.length - 1]?.c || 2750;
+    return { poc: p, vah: p + 2, val: p - 2, pocTested: false };
+  }
+  const slice = bars.slice(Math.max(0, bars.length - lookback));
+  let minP = 1e9, maxP = -1e9;
+  for (const b of slice) {
+    if (b.l < minP) minP = b.l;
+    if (b.h > maxP) maxP = b.h;
+  }
+  const bucketSize = 0.50; // $0.50 price steps for Gold
+  const numBuckets = Math.max(1, Math.ceil((maxP - minP) / bucketSize));
+  const volProfile = new Float64Array(numBuckets);
+
+  for (const b of slice) {
+    const bucketIdx = Math.min(numBuckets - 1, Math.max(0, Math.floor((b.c - minP) / bucketSize)));
+    const vol = b.v || 500;
+    volProfile[bucketIdx] += vol;
+  }
+
+  let maxVol = -1;
+  let pocIdx = 0;
+  for (let i = 0; i < numBuckets; i++) {
+    if (volProfile[i] > maxVol) {
+      maxVol = volProfile[i];
+      pocIdx = i;
+    }
+  }
+
+  const poc = Number((minP + pocIdx * bucketSize + bucketSize / 2).toFixed(2));
+  const val = Number((minP + Math.max(0, pocIdx - Math.floor(numBuckets * 0.35)) * bucketSize).toFixed(2));
+  const vah = Number((minP + Math.min(numBuckets - 1, pocIdx + Math.floor(numBuckets * 0.35)) * bucketSize).toFixed(2));
+
+  const curPrice = bars[bars.length - 1]?.c || poc;
+  const pocTested = Math.abs(curPrice - poc) <= 0.8;
+
+  return { poc, vah, val, pocTested };
+}
+
 interface TradePlan {
   entry: number;
   sl: number;
@@ -460,7 +500,8 @@ interface TradePlan {
 
 /** size a trade against current bar and risk model (fixedUSD, percentEquity, fractionalKelly) */
 function planTrade(st: EngineState, cfg: EngineConfig, bar: Bar, side: "LONG" | "SHORT", atr: number): TradePlan | null {
-  const half = cfg.spread / 2;
+  const currentSpread = st.effectiveSpread || cfg.spread;
+  const half = currentSpread / 2;
   const isGold = (cfg.activeSymbol || "").startsWith("XAU");
   const effAtr = Math.max(atr || 2.5, isGold ? 2.5 : 0.002);
   const entry = side === "LONG" ? bar.c + half : bar.c - half;
@@ -509,7 +550,13 @@ function planTrade(st: EngineState, cfg: EngineConfig, bar: Bar, side: "LONG" | 
   const rawOz = targetRiskUSD / (slDist * cfg.pointValue);
   const oz = Math.max(0.01, Math.min(rawOz, marginCapUnits));
   const risk = oz * slDist * cfg.pointValue;
-  const tp = side === "LONG" ? entry + slDist * cfg.rr : entry - slDist * cfg.rr;
+
+  // Feature 4: Dynamic Profit Scaling on Super-Trends (1:3.5R expansion)
+  const isSuperTrend =
+    (st.regime === "TRENDING_BULL" || st.regime === "TRENDING_BEAR") &&
+    Math.abs(st.ema50 - st.ema200) >= 1.2 * effAtr;
+  const dynamicRR = isSuperTrend ? Math.max(3.5, cfg.rr * 1.4) : Math.max(2.5, cfg.rr);
+  const tp = side === "LONG" ? entry + slDist * dynamicRR : entry - slDist * dynamicRR;
   return { entry, sl, tp, oz, risk, slDist };
 }
 
@@ -851,7 +898,7 @@ function evaluate(st: EngineState, cfg: EngineConfig, bar: Bar, cls: CandleClass
     return;
   }
 
-  // --- GOLD INSTITUTIONAL PILLAR 1: HIGH-IMPACT NEWS CALENDAR COOLDOWN ---
+  // --- GOLD INSTITUTIONAL PILLAR 1: HIGH-IMPACT NEWS CALENDAR & SPREAD PROTECTION ---
   const checkUpcomingNews = (timestamp: number) => {
     const d = new Date(timestamp);
     const day = d.getUTCDay(); // 1=Mon, 5=Fri
@@ -860,17 +907,21 @@ function evaluate(st: EngineState, cfg: EngineConfig, bar: Bar, cls: CandleClass
     const totalMin = hour * 60 + min;
 
     // Standard high-impact economic release windows (UTC)
-    // 12:30 UTC: US CPI / PPI / Retail Sales / NFP (first Friday)
-    // 18:00 UTC: FOMC Rate Decision (Wednesdays)
+    // 12:30/13:30 UTC: US NFP (first Friday) / US CPI / Retail Sales / Core PCE
+    // 14:00/15:00 UTC: US ISM PMI
+    // 18:00/19:00 UTC: FOMC Rate Decision & Powell Speech (Wednesdays)
     let eventName = "";
     let eventMin = -1;
 
-    if (hour === 12 && min >= 15 && min <= 45) {
+    if ((hour === 12 || hour === 13) && min >= 15 && min <= 45) {
       eventName = day === 5 ? "US Non-Farm Payrolls (NFP)" : "US CPI / Inflation Release";
-      eventMin = 12 * 60 + 30;
-    } else if (day === 3 && hour === 18 && min <= 30) {
-      eventName = "FOMC Rate Decision / Powell Speech";
-      eventMin = 18 * 60;
+      eventMin = hour * 60 + 30;
+    } else if (hour === 14 && min >= 45 && min <= 60) {
+      eventName = "US ISM Manufacturing / Services PMI";
+      eventMin = 15 * 60;
+    } else if (day === 3 && (hour === 18 || hour === 19) && min <= 45) {
+      eventName = "FOMC Rate Decision / Powell Press Conf";
+      eventMin = 18 * 60 + 30;
     }
 
     if (eventName && eventMin > 0) {
@@ -882,6 +933,7 @@ function evaluate(st: EngineState, cfg: EngineConfig, bar: Bar, cls: CandleClass
         impact: "HIGH" as const,
         minutesUntil: totalMin < eventMin ? eventMin - totalMin : 0,
         isCooldownActive: isCooldown,
+        spreadMultiplier: isCooldown ? 3.5 : 1.0, // Dynamic spread expansion to $1.20 during news
       };
     }
     return null;
@@ -926,7 +978,8 @@ function evaluate(st: EngineState, cfg: EngineConfig, bar: Bar, cls: CandleClass
 
   if (st.open) {
     const t = st.open as Trade;
-    const half = cfg.spread / 2;
+    const currentSpread = st.effectiveSpread || cfg.spread;
+    const half = currentSpread / 2;
     const curPnl = t.side === "LONG"
       ? t.oz * (bar.c - half - t.entry)
       : t.oz * (t.entry - (bar.c + half));
@@ -942,22 +995,28 @@ function evaluate(st: EngineState, cfg: EngineConfig, bar: Bar, cls: CandleClass
     return;
   }
 
+  // Feature 2: High-Impact News Calendar with Dynamic Spread Expansion
   const newsEvent = checkUpcomingNews(bar.t);
   st.upcomingNews = newsEvent;
+  st.effectiveSpread = cfg.spread * (newsEvent?.spreadMultiplier || 1.0);
 
   if (newsEvent && newsEvent.isCooldownActive) {
     st.regime = "NEWS_SPIKE";
     setEval(
       [
         { k: "NEWS CALENDAR", ok: false, v: `${newsEvent.event}` },
-        { k: "RELEASE TIME", ok: false, v: newsEvent.timeUTC },
+        { k: "SPREAD PROTECTION", ok: false, v: `EXPANDED ($${st.effectiveSpread.toFixed(2)})` },
         { k: "COOLDOWN", ok: false, v: "±15m ACTIVE" },
         { k: "GATE", ok: false, v: "HALTED FOR NEWS" },
       ],
-      `High-Impact news event (${newsEvent.event}) active. Order execution halted during high-volatility news window to avoid slippage & stop-hunts.`
+      `High-Impact news event (${newsEvent.event}) active. Dynamic spread expanded to $${st.effectiveSpread.toFixed(2)}. Execution locked to prevent slippage & stop-hunts.`
     );
     return;
   }
+
+  // Feature 1: Real-Time Volume Profile POC (Point of Control) & CVD
+  const vp = computeVolumeProfile(st.bars, 32);
+  st.volumeProfile = vp;
 
   // --- GOLD INSTITUTIONAL PILLAR 2: ASIAN RANGE BREAKOUT FAKEOUT STRATEGY ---
   const barHour = dt.getUTCHours();
@@ -1338,7 +1397,7 @@ function evaluate(st: EngineState, cfg: EngineConfig, bar: Bar, cls: CandleClass
     const scoreCandidate = (s: typeof swept[number], side: "LONG" | "SHORT"): number => {
       let score = 0;
       // 30 pts: Major liquidity pool (PDH, PDL, session extremes, triple top/bottom)
-      const majorKinds = ["PDH", "PDL", "LON_H", "LON_L", "NY_H", "NY_L", "OVL_H", "OVL_L", "TT", "TB"];
+      const majorKinds = ["PDH", "PDL", "LON_H", "LON_L", "NY_H", "NY_L", "TT", "TB"];
       if (majorKinds.includes(s.a.kind)) score += 30;
       else score += 10; // minor pool (FVG OB with displacement gets partial credit)
 
@@ -1356,7 +1415,13 @@ function evaluate(st: EngineState, cfg: EngineConfig, bar: Bar, cls: CandleClass
       if (st.activeKillzone === "LONDON" || st.activeKillzone === "NEW_YORK" || st.activeKillzone === "OVERLAP") score += 20;
       else if (!cfg.killzoneFilter) score += 10;
 
-      return score;
+      // Feature 1: Volume Profile POC / Value Area Confluence (+15 pts)
+      if (st.volumeProfile) {
+        if (side === "LONG" && (bar.c <= st.volumeProfile.val + 0.6 * atr || st.volumeProfile.pocTested)) score += 15;
+        else if (side === "SHORT" && (bar.c >= st.volumeProfile.vah - 0.6 * atr || st.volumeProfile.pocTested)) score += 15;
+      }
+
+      return Math.min(100, score);
     };
 
     const tryEnter = (side: "LONG" | "SHORT", a: Aoi, key: string) =>
