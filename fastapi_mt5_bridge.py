@@ -105,7 +105,7 @@ def enforce_rate_limit(request: Request):
     _request_history[client_ip].append(now)
 
 def init_db():
-    """Initialize database schema with WAL mode for concurrency."""
+    """Initialize database schema with WAL mode for concurrency and idempotency."""
     with sqlite3.connect(DB) as conn:
         conn.execute("PRAGMA journal_mode=WAL;")
         conn.execute("""
@@ -131,7 +131,26 @@ def init_db():
                 sl_hits INTEGER DEFAULT 0
             )
         """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS processed_signals (
+                signal_id TEXT PRIMARY KEY,
+                ts TEXT,
+                ticket INTEGER,
+                status TEXT
+            )
+        """)
         conn.commit()
+
+def ensure_mt5_connected() -> bool:
+    """Check MT5 terminal connection and attempt automatic recovery if disconnected."""
+    try:
+        if not mt5.initialize():
+            return False
+        acc = mt5.account_info()
+        return acc is not None
+    except Exception as e:
+        print(f"[!] MT5 connection check error: {e}")
+        return False
 
 @contextmanager
 def get_db():
@@ -201,6 +220,7 @@ class OrderPayload(BaseModel):
     sl: Optional[float] = Field(None, gt=0.0, description="Stop Loss price")
     tp: Optional[float] = Field(None, gt=0.0, description="Take Profit price")
     comment: Optional[str] = Field("Trading Flow Signal", max_length=64, description="Order comment")
+    signal_id: Optional[str] = Field(None, max_length=64, description="Unique Signal ID for idempotency deduplication")
 
     @field_validator("action")
     @classmethod
@@ -218,26 +238,22 @@ def verify_auth(payload_secret: Optional[str], auth_header: Optional[str]) -> bo
 @app.get("/health", dependencies=[Depends(enforce_rate_limit)])
 def health(authorization: Optional[str] = Header(None)):
     """
-    Health check endpoint.
-    - Unauthenticated requests receive sanitized status without sensitive account balance/login exposure.
-    - Authenticated requests with valid Bearer token receive full MT5 telemetry.
+    Health check endpoint with auto-reconnect and sanitized telemetry.
     """
     is_authenticated = verify_auth(None, authorization)
-    connected = False
+    connected = ensure_mt5_connected()
     acc_info = None
 
-    if mt5.initialize():
+    if connected:
         acc = mt5.account_info()
-        if acc:
-            connected = True
-            if is_authenticated:
-                acc_info = {
-                    "login": acc.login,
-                    "server": acc.server,
-                    "balance": acc.balance,
-                    "equity": acc.equity,
-                    "currency": acc.currency
-                }
+        if acc and is_authenticated:
+            acc_info = {
+                "login": acc.login,
+                "server": acc.server,
+                "balance": acc.balance,
+                "equity": acc.equity,
+                "currency": acc.currency
+            }
 
     resp = {
         "status": "online",
@@ -253,7 +269,7 @@ def health(authorization: Optional[str] = Header(None)):
 @app.post("/webhook", dependencies=[Depends(enforce_rate_limit)])
 def place_order(order: OrderPayload, authorization: Optional[str] = Header(None)):
     """
-    Authenticated order placement with atomic race-condition protected daily limit enforcement.
+    Authenticated order placement with idempotency deduplication, auto-reconnect, and atomic daily limit enforcement.
     """
     # 1. Enforce Authentication
     if not verify_auth(order.secret, authorization):
@@ -262,7 +278,22 @@ def place_order(order: OrderPayload, authorization: Optional[str] = Header(None)
             detail="Unauthorized: Invalid or missing authentication secret"
         )
 
-    # 2. Atomic Daily Stop-Loss Check (Prevent TOCTOU race conditions)
+    # 2. Idempotency Check (Prevent duplicate executions from webhook retries)
+    if order.signal_id:
+        with get_db() as conn:
+            existing = conn.execute(
+                "SELECT ticket, status FROM processed_signals WHERE signal_id = ?",
+                (order.signal_id,)
+            ).fetchone()
+            if existing:
+                return {
+                    "status": "duplicate_skipped",
+                    "ticket": existing["ticket"],
+                    "message": f"Signal {order.signal_id} already executed. Duplicate order skipped.",
+                    "idempotent": True
+                }
+
+    # 3. Atomic Daily Stop-Loss Check (Prevent TOCTOU race conditions)
     today = datetime.utcnow().strftime("%Y-%m-%d")
     with get_db() as conn:
         conn.execute("BEGIN IMMEDIATE")
@@ -274,11 +305,11 @@ def place_order(order: OrderPayload, authorization: Optional[str] = Header(None)
                 detail=f"Trading halted: Max daily SL hits reached ({sl_hits}/{MAX_DAILY_SL})"
             )
 
-    # 3. Ensure MT5 is ready
-    if not mt5.initialize():
+    # 4. Ensure MT5 is connected with automatic recovery
+    if not ensure_mt5_connected():
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=f"MT5 unavailable: {mt5.last_error()}"
+            detail=f"MT5 terminal disconnected: {mt5.last_error()}"
         )
 
     # Find symbol in MT5
@@ -335,7 +366,7 @@ def place_order(order: OrderPayload, authorization: Optional[str] = Header(None)
             "type": action_type,
             "price": float(fill_price),
             "deviation": 20,
-            "magic": 777001,
+            "magic": 888123,
             "comment": order.comment or "Trading Flow",
             "type_time": mt5.ORDER_TIME_GTC,
             "type_filling": f_mode,
@@ -361,7 +392,7 @@ def place_order(order: OrderPayload, authorization: Optional[str] = Header(None)
             detail=f"Order rejected by MT5 (Code {err_code}): {err_comment}"
         )
 
-    # 4. Compute realistic slippage and record
+    # 5. Compute realistic slippage and record
     actual_fill = last_result.price if last_result.price > 0 else fill_price
     slippage = abs(actual_fill - order.price)
 
@@ -382,6 +413,16 @@ def place_order(order: OrderPayload, authorization: Optional[str] = Header(None)
             order.tp,
             "FILLED"
         ))
+        if order.signal_id:
+            conn.execute("""
+                INSERT OR REPLACE INTO processed_signals (signal_id, ts, ticket, status)
+                VALUES (?, ?, ?, ?)
+            """, (
+                order.signal_id,
+                datetime.utcnow().isoformat(),
+                last_result.order,
+                "FILLED"
+            ))
 
     return {
         "status": "success",

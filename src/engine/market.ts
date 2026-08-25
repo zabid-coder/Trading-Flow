@@ -47,7 +47,7 @@ function gauss(rng: () => number) {
   return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
 }
 
-/** Transition matrix for market regimes with realistic institutional follow-through */
+/** Transition matrix for market regimes with realistic balanced follow-through */
 function pickNextRegime(current: MarketRegime, rng: () => number): { regime: MarketRegime; duration: number } {
   const r = rng();
   let next: MarketRegime = "RANGING_CHOP";
@@ -55,22 +55,22 @@ function pickNextRegime(current: MarketRegime, rng: () => number): { regime: Mar
   let maxDuration = 36;
 
   if (current === "RANGING_CHOP") {
-    if (r < 0.25) next = "RANGING_CHOP";
-    else if (r < 0.55) next = "LIQUIDITY_HUNT";
-    else if (r < 0.78) { next = "TRENDING_BULL"; minDuration = 18; maxDuration = 48; }
-    else { next = "TRENDING_BEAR"; minDuration = 18; maxDuration = 48; }
+    if (r < 0.35) next = "RANGING_CHOP";
+    else if (r < 0.65) next = "LIQUIDITY_HUNT";
+    else if (r < 0.83) { next = "TRENDING_BULL"; minDuration = 16; maxDuration = 40; }
+    else { next = "TRENDING_BEAR"; minDuration = 16; maxDuration = 40; }
   } else if (current === "TRENDING_BULL") {
-    if (r < 0.60) { next = "TRENDING_BULL"; minDuration = 20; maxDuration = 52; } // Persistent trend
-    else if (r < 0.82) next = "LIQUIDITY_HUNT"; // Exhaustion trap top
+    if (r < 0.50) { next = "TRENDING_BULL"; minDuration = 16; maxDuration = 42; }
+    else if (r < 0.80) next = "LIQUIDITY_HUNT"; // Exhaustion trap top
     else next = "RANGING_CHOP";
   } else if (current === "TRENDING_BEAR") {
-    if (r < 0.60) { next = "TRENDING_BEAR"; minDuration = 20; maxDuration = 52; } // Persistent trend
-    else if (r < 0.82) next = "LIQUIDITY_HUNT"; // Flush trap bottom
+    if (r < 0.50) { next = "TRENDING_BEAR"; minDuration = 16; maxDuration = 42; }
+    else if (r < 0.80) next = "LIQUIDITY_HUNT"; // Flush trap bottom
     else next = "RANGING_CHOP";
   } else {
-    // After LIQUIDITY_HUNT -> Institutional smart money provides strong directional follow-through
-    if (r < 0.45) { next = "TRENDING_BULL"; minDuration = 20; maxDuration = 48; }
-    else if (r < 0.90) { next = "TRENDING_BEAR"; minDuration = 20; maxDuration = 48; }
+    // After LIQUIDITY_HUNT -> Realistic market distribution: 30% Bull trend, 30% Bear trend, 40% Ranging/Chop
+    if (r < 0.30) { next = "TRENDING_BULL"; minDuration = 16; maxDuration = 38; }
+    else if (r < 0.60) { next = "TRENDING_BEAR"; minDuration = 16; maxDuration = 38; }
     else next = "RANGING_CHOP";
   }
 
@@ -142,28 +142,28 @@ export function nextBar(st: EngineState, intervalMs: number = BAR_MS): Bar {
     }
     case "LIQUIDITY_HUNT": {
       // High volatility sweep hunting previous liquidity pools
-      const sweepVol = baseVol * (1.6 + rng() * 1.6);
+      const sweepVol = baseVol * (1.5 + rng() * 1.3);
       const huntLow = rng() < 0.5;
-      const isCleanRejection = rng() < 0.70; // 70% clean rejection, 30% messy wick fill
+      const isCleanRejection = rng() < 0.50; // Realistic balanced rejection rate
 
       if (isCleanRejection) {
         const body = sweepVol * 0.18 * (rng() - 0.5);
         c = o + body;
         if (huntLow) {
-          wD = sweepVol * (1.6 + rng() * 1.4);
+          wD = sweepVol * (1.5 + rng() * 1.2);
           wU = sweepVol * 0.20 * rng();
         } else {
-          wU = sweepVol * (1.6 + rng() * 1.4);
+          wU = sweepVol * (1.5 + rng() * 1.2);
           wD = sweepVol * 0.20 * rng();
         }
       } else {
-        // Messy rejection
+        // Messy rejection / wick fill
         const body = sweepVol * 0.40 * (huntLow ? 0.8 : -0.8);
         c = o + body;
         wD = sweepVol * (0.8 + rng() * 0.7);
         wU = sweepVol * (0.8 + rng() * 0.7);
       }
-      v *= 2.4;
+      v *= 2.2;
       break;
     }
     case "RANGING_CHOP":

@@ -210,7 +210,7 @@ function TerminalContent() {
       }
 
       setTick((t) => t + 1);
-    }, [1150, 430, 150, 55][speed] ?? 430);
+    }, [1200, 500, 200, 90][speed] ?? 500);
 
     return () => window.clearInterval(id);
   }, [running, speed, cfg.feedMode]);

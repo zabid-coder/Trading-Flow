@@ -217,6 +217,7 @@ export async function dispatchTradeOrder(
       const timeoutId = setTimeout(() => controller.abort(), 5000);
 
       try {
+        const signalId = `TF_${symbol}_${item.id || Date.now()}_${item.entryIndex || 0}`;
         const payload = {
           secret: cfg.mt5Secret,
           ticker: symbol,
@@ -226,6 +227,7 @@ export async function dispatchTradeOrder(
           sl: Number(sl.toFixed(4)),
           tp: Number(tp.toFixed(4)),
           comment: `TF_${item.setup || "Trap"}`.slice(0, 31),
+          signal_id: signalId,
         };
 
         const headers: Record<string, string> = {
