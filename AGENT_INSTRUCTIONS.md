@@ -1,55 +1,40 @@
-# 🤖 Agent Developer Instructions: Gold Trading System Operations & MT5 Bridge
+# Agent instructions — Safe Scalper Control
 
-## 📌 Mission
-This repository houses **Trading Flow PRO v4.0**, an institutional-grade algorithmic execution platform for **XAUUSD Gold**. All autonomous AI agents and engineers operating in this codebase must strictly observe the following development rules and operational protocols.
+## Product boundary
 
----
+This repository is a single-strategy SafeScalperPro implementation. Do not reintroduce legacy strategies, discretionary entries, grid, martingale, hedging, averaging or multi-strategy confluence.
 
-## 🛠️ Architecture & Technology Stack
+The runtime source of truth is `strategy_config.json`. The seven entry gates must all pass on the same completed candle. Live prices and contract metadata must come from the connected MT5 broker, never a proxy symbol.
 
-- **Frontend**: React 19, TypeScript 5.8, TailwindCSS v4, Vite 6.
-- **Backend Bridge**: Python 3.10+ with FastAPI, Uvicorn, SQLite WAL, Pydantic v2, and MetaTrader 5 (with graceful macOS simulation mock fallback).
-- **Quantitative Engine**: `gold_strategy_core.py`, `advanced_backtest_engine.py`, `run_backtest.py`.
-- **Config**: Centralized in `strategy_config.json`.
+## Safety invariants
 
----
+1. Default risk is 0.5% equity and must remain bounded to 0.1–1.0% in the UI.
+2. Never round volume upward to the broker minimum. Reject a trade when minimum volume exceeds the approved risk.
+3. Use native MT5 profit and margin calculations before order submission; calculation failure blocks execution.
+4. Enforce volume min/max/step, stops level, freeze level plus safety buffer, daily trade cap, daily loss limit and peak-equity drawdown pause.
+5. Live mode fails closed when the native calendar guard is missing, stale or reports a high-impact USD event.
+6. One open position and one pending signal maximum.
+7. Partial close must be skipped when either resulting volume is below broker minimum.
 
-## 🔒 Security Standards (Strict Non-Negotiables)
+## Security
 
-1. **Zero Hardcoded Secrets**: Never commit plaintext API keys or webhook secrets. Always use `os.getenv("TF_WEBHOOK_SECRET")` or generate random tokens via `secrets.token_urlsafe(32)`.
-2. **Local Storage Encryption**: All sensitive broker credentials in browser storage must pass through `encryptVaultData()` and `decryptVaultData()` in `src/utils/crypto.ts`.
-3. **Pydantic Validation**: All FastAPI endpoints accepting external payload must use Pydantic models with bounds checking (`gt=0.0`, `le=1000.0`).
-4. **Atomic SQLite Transactions**: All operations modifying account limits or trade counts must use `conn.execute("BEGIN IMMEDIATE")` to prevent TOCTOU race conditions.
-5. **Rate Limiting**: Public endpoints must be guarded by sliding-window rate limiters.
+- No hardcoded credentials. Load `TF_WEBHOOK_SECRET` from the environment.
+- Do not persist broker/Telegram credentials in the browser. Keep them in memory only; fixed-XOR obfuscation is not encryption.
+- Validate external payloads with bounded Pydantic models.
+- Keep order idempotency and atomic SQLite daily-limit checks.
+- Keep public endpoints rate-limited and require bearer authentication for account, symbol, bar and news data.
+- Real-account and mock execution remain blocked. Demo submission requires explicit host opt-in; never enable it as part of tests.
+- Broker positions/deals are authoritative. Advanced paper exits must never masquerade as broker management.
+- Demo advanced exits run only in the host-owned lifecycle worker, against receipt-verified positions. Preserve stable identifiers, monotonic stops, initial-volume partial accounting and entry-time policy. Never retry UNKNOWN/SENDING management actions.
+- Operator recovery is ledger-only and must require exact account confirmation, a reason and conclusive broker evidence. Preserve the peak and daily latch when reviewing recovered drawdown.
 
----
-
-## 📈 Strategic Logic Rules for Gold (XAUUSD)
-
-1. **Multi-Timeframe Regime Gate**:
-   - Longs are ONLY allowed when `4H_EMA20 > 4H_EMA50`.
-   - Shorts are ONLY allowed when `4H_EMA20 < 4H_EMA50`.
-2. **Minimum Risk-Reward**: No setup can be triggered with a mathematical Risk-to-Reward ratio lower than **1:2.5**.
-3. **Volatility-Adaptive Risk**:
-   - Standard: 2.0% equity risk.
-   - High Volatility (`ATR > 1.5x` Avg ATR): Scaled down to `0.7x` (1.4% risk).
-   - Low Volatility (`ATR < 0.7x` Avg ATR): Scaled up to `1.3x` (2.6% risk).
-4. **Trade Management Automation**:
-   - Auto-Breakeven: Triggered at `+1.0R`.
-   - Partial Take-Profit: 50% position scale-out at `+1.5R`.
-   - Time Stop: Liquidate positions with no structural momentum after 4 hours (16 M15 bars).
-
----
-
-## 🚀 Server Run Commands
+## Verification
 
 ```bash
-# 1. Start Frontend Dev Server
-npm run dev -- --port 3000
-
-# 2. Start FastAPI MT5 Bridge Server
-python3 -m uvicorn fastapi_mt5_bridge:app --host 0.0.0.0 --port 8000 --reload
-
-# 3. Run Quantitative Backtest & 14-Fold Rolling WFO
+npm run typecheck
+npm run build
+npm test
+npm run test:bridge
+python3 -m py_compile fastapi_mt5_bridge.py broker_lifecycle.py gold_strategy_core.py advanced_backtest_engine.py run_backtest.py
 python3 run_backtest.py
 ```

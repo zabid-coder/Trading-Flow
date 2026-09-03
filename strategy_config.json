@@ -1,64 +1,75 @@
 {
+  "system": {
+    "name": "Safe Scalper Control",
+    "strategy": "safe_scalper_pro",
+    "exclusive": true,
+    "symbol": "XAUUSD",
+    "timeframe": "M5",
+    "execution_mode": "supervised"
+  },
   "instrument": {
     "symbol": "XAUUSD",
     "point_value": 0.01,
     "contract_size": 100,
-    "digits": 2
+    "digits": 2,
+    "leverage": 100,
+    "volume_min": 0.01,
+    "volume_max": 100,
+    "volume_step": 0.01
   },
   "risk_management": {
-    "account_balance": 1000.0,
-    "base_risk_per_trade_pct": 2.0,
-    "max_daily_loss_pct": 3.0,
-    "max_consecutive_losses": 3,
-    "max_daily_sl_hits": 2,
-    "volatility_atr_multiplier_threshold": 1.5,
-    "high_volatility_risk_scale": 0.5,
-    "breakeven_trigger_r": 1.0,
-    "partial_tp_trigger_r": 1.5,
-    "partial_tp_ratio": 0.5,
-    "target_r_multiple": 2.5,
-    "max_trade_duration_hours": 4.0
+    "account_balance": 500
   },
   "execution_costs": {
-    "spread_points_standard": 20,
+    "spread_points_standard": 2.5,
     "spread_points_news": 50,
-    "commission_per_lot_round_turn": 7.0,
+    "commission_per_lot_round_turn": 7,
     "slippage_points_standard": 1.5,
-    "slippage_points_news": 6.0
+    "slippage_points_news": 6
   },
-  "regime_parameters": {
-    "ema_fast_period": 20,
-    "ema_slow_period": 50,
-    "adx_period": 14,
-    "adx_strong_threshold": 25.0,
-    "adx_ranging_threshold": 15.0,
-    "bb_period": 20,
-    "bb_std": 2.0,
-    "bb_expansion_ratio": 2.0,
-    "volume_ma_period": 20,
-    "news_spike_volume_multiplier": 5.0,
-    "news_cooldown_minutes": 15
+  "execution": {
+    "max_deviation_points": 3,
+    "broker_stop_buffer_points": 5,
+    "news_minutes_before": 30,
+    "news_minutes_after": 15
   },
-  "liquidity_parameters": {
-    "fvg_min_gap_atr_ratio": 0.3,
-    "fvg_lookback_bars": 12,
-    "order_block_lookback_bars": 24,
-    "liquidity_sweep_bars": 10
-  },
-  "gold_patterns": {
-    "asian_range_start_gmt": "00:00",
-    "asian_range_end_gmt": "07:00",
-    "london_session_start_gmt": "07:00",
-    "london_session_end_gmt": "12:00",
-    "max_fakeout_reversal_candles": 2,
-    "friday_profit_taking_hour_gmt": 14,
-    "friday_risk_reduction_pct": 50.0,
-    "dxy_correlation_threshold": 0.8
-  },
-  "multi_timeframe": {
-    "macro_trend_timeframe": "H4",
-    "structure_aoi_timeframe": "M15",
-    "refinement_trigger_timeframe": "M5",
-    "confluence_threshold_score": 75
+  "safe_scalper_pro": {
+    "enabled": true,
+    "exclusive": true,
+    "magic_number": 202503,
+    "risk_percent": 0.5,
+    "daily_loss_percent": 1.5,
+    "max_drawdown_pct": 5,
+    "max_day_trades": 2,
+    "max_margin_percent": 25,
+    "stop_loss_points": 300,
+    "take_profit_points": 450,
+    "auto_adjust_two_digit_gold": true,
+    "ema_fast": 50,
+    "ema_slow": 200,
+    "trend_strength_atr": 0.3,
+    "use_mtf": true,
+    "mtf_ema_fast": 20,
+    "mtf_ema_slow": 50,
+    "rsi_period": 14,
+    "rsi_buy_min": 45,
+    "rsi_buy_max": 65,
+    "rsi_sell_min": 35,
+    "rsi_sell_max": 55,
+    "breakout_lookback": 15,
+    "breakout_buffer_atr": 0.3,
+    "atr_period": 50,
+    "session_start_hour_utc": 8,
+    "session_end_hour_utc": 17,
+    "avoid_friday": true,
+    "friday_cutoff_hour_utc": 14,
+    "max_spread_points": 50,
+    "max_spread_to_stop_percent": 12,
+    "breakeven_start_points": 150,
+    "breakeven_offset_points": 20,
+    "trailing_start_points": 200,
+    "trailing_step_points": 100,
+    "partial_tp_points": 200,
+    "partial_close_percent": 50
   }
 }

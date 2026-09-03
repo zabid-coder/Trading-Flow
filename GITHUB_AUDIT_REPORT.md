@@ -1,3 +1,5 @@
+> **Historical legacy document — superseded.** Its strategies, commands and validation claims do not describe the current SafeScalper system. Use [README.md](README.md) and [the current research audit](reports/safe_scalper_backtest_audit.md). Retained only as project history; do not follow legacy execution instructions.
+
 # 🛡️ Comprehensive GitHub Security & System Audit Report
 
 **Target Platform**: Trading Flow PRO v4.0 (Institutional Gold Edition)  

@@ -1,3 +1,5 @@
+> **Historical legacy document — superseded.** Its strategies, commands and validation claims do not describe the current SafeScalper system. Use [README.md](README.md) and [the current research audit](reports/safe_scalper_backtest_audit.md). Retained only as project history; do not follow legacy execution instructions.
+
 # Integration Guide: Institutional Gold Strategy Core with Trading Flow & MT5
 
 This guide provides step-by-step instructions to integrate the **Institutional Gold Strategy Core (`gold_strategy_core.py`)** with the **FastAPI MT5 Bridge (`fastapi_mt5_bridge.py`)** and the **Trading Flow PRO Web UI**.

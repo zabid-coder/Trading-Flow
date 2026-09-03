@@ -1,30 +1,22 @@
-"""
-run_backtest.py — Executive Backtest Execution & Rolling Walk-Forward Audit Script
-Includes 11 Institutional Upgrades for Gold (XAUUSD):
-- Multi-Timeframe Regime Filtering (4H + 15m + 5m)
-- Dynamic Liquidity Heat Maps (EQH/EQL, Psychological, Weekly/Monthly extremes)
-- Order Flow Confirmations (Delta Divergence, Institutional Absorption, Stop Run Reversal)
-- Mitigation Block Entries
-- Volatility-Adaptive Sizing
-- Rolling Walk-Forward Optimization Framework (std(win_rates) < 8%)
-"""
-
+"""Fixed-parameter M5 research audit. Synthetic/CSV bars are NOT real ticks."""
+import argparse
+import hashlib
+import html
 import json
 import math
-import os
 from datetime import datetime, timezone
-from typing import Any, Dict, List
+from pathlib import Path
+from typing import Any, Dict
+
 import numpy as np
 import pandas as pd
-
 from advanced_backtest_engine import AdvancedBacktestEngine
 
-
-def generate_realistic_gold_data(days: int = 365, timeframe_mins: int = 15) -> pd.DataFrame:
+def generate_realistic_gold_data(days: int = 365, timeframe_mins: int = 5) -> pd.DataFrame:
     """
-    Generates 1 full year of realistic institutional Gold (XAUUSD) M15 OHLCV price action.
+    Generates synthetic XAUUSD bars for an engine smoke test.
     """
-    print(f"[*] Generating {days} days of realistic institutional Gold (XAUUSD) M15 data...")
+    print(f"[*] Generating {days} days of synthetic XAUUSD M{timeframe_mins} data...")
     bars_per_day = (24 * 60) // timeframe_mins
     total_bars = days * bars_per_day
 
@@ -93,302 +85,149 @@ def generate_realistic_gold_data(days: int = 365, timeframe_mins: int = 15) -> p
     return df
 
 
-def rolling_walk_forward_analysis(df: pd.DataFrame, window_bars: int = 7000, step_bars: int = 2000) -> Dict[str, Any]:
+
+def load_broker_csv(path: str, utc_offset_hours: float | None = None) -> pd.DataFrame:
+    """Read MT5 tab-separated bar export or normalized OHLCV CSV.
+    MT5 date/time exports use broker server time; require an explicit UTC offset.
+    Export periods spanning a DST change must be normalized to UTC beforehand.
     """
-    Rolling Walk-Forward Analysis across multiple sequential folds.
-    Verifies parameter robustness and calculates win-rate stability.
-    """
-    print("\n--- 4. EXECUTING ROLLING WALK-FORWARD OPTIMIZATION FOLDS ---")
+    frame = pd.read_csv(path, sep=None, engine="python")
+    frame.columns = [str(c).strip().strip("<>").lower() for c in frame.columns]
+    if "timestamp" in frame:
+        numeric = pd.to_numeric(frame["timestamp"], errors="coerce")
+        if numeric.isna().any(): raise ValueError("timestamp must be UTC Unix seconds or milliseconds")
+        frame["timestamp"] = (numeric * (1000 if numeric.max() < 1e11 else 1)).astype("int64")
+    elif "date" in frame and "time" in frame:
+        if utc_offset_hours is None:
+            raise ValueError("MT5 DATE/TIME requires --broker-utc-offset-hours; do not assume server time is UTC")
+        dates = pd.to_datetime(frame["date"].astype(str) + " " + frame["time"].astype(str), utc=True, errors="raise")
+        dates = dates - pd.Timedelta(hours=utc_offset_hours)
+        # Explicit unit conversion works with pandas datetime64[us] as well as [ns].
+        frame["timestamp"] = dates.astype("datetime64[ms, UTC]").astype("int64")
+    else:
+        raise ValueError("CSV needs timestamp or MT5 <DATE>/<TIME> columns")
+    if "volume" not in frame:
+        frame["volume"] = frame["tickvol"] if "tickvol" in frame else 0.
+    required = ["timestamp", "open", "high", "low", "close", "volume"]
+    if any(c not in frame for c in required): raise ValueError("CSV is missing OHLCV columns")
+    for column in required + (["spread"] if "spread" in frame else []):
+        frame[column] = pd.to_numeric(frame[column], errors="raise")
+        if not np.isfinite(frame[column].to_numpy()).all(): raise ValueError(f"Invalid values in {column}")
+    if len(frame) < 900: raise ValueError("Need at least 900 completed M5 bars for H1 warmup")
+    if not (frame["timestamp"].diff().dropna() > 0).all(): raise ValueError("Timestamps must be ordered and unique")
+    if (frame["timestamp"] % 300_000 != 0).any(): raise ValueError("Expected UTC-aligned M5 candles")
+    if ((frame["timestamp"].diff().dropna() < 300_000)).any(): raise ValueError("Input is finer than M5; resample first")
+    if (frame["timestamp"] + 300_000 > int(datetime.now(timezone.utc).timestamp()*1000)).any():
+        raise ValueError("Future or still-forming candles are not allowed")
+    if (frame[["open", "high", "low", "close"]] <= 0).any().any() or (frame["volume"] < 0).any():
+        raise ValueError("Prices must be positive and volume nonnegative")
+    if ((frame["low"] > frame[["open","close"]].min(axis=1)) | (frame["high"] < frame[["open","close"]].max(axis=1))).any():
+        raise ValueError("OHLC envelope is invalid")
+    if "spread" in frame and (frame["spread"] < 0).any(): raise ValueError("Spread must be nonnegative")
+    return frame.reset_index(drop=True)
+
+
+def rolling_walk_forward_analysis(df: pd.DataFrame, window_bars=7000, step_bars=7000) -> Dict[str, Any]:
+    """Non-overlapping fixed-parameter windows, NOT parameter optimization."""
+    if step_bars < window_bars: raise ValueError("Overlapping evaluation folds are not allowed")
     folds = []
-    win_rates = []
-    profit_factors = []
-
-    num_splits = max(1, (len(df) - window_bars) // step_bars)
-
-    for f_idx in range(num_splits):
-        start = f_idx * step_bars
-        train_end = start + int(window_bars * 0.70)
-        test_end = start + window_bars
-
-        train_df = df.iloc[start:train_end].reset_index(drop=True)
-        test_df = df.iloc[train_end:test_end].reset_index(drop=True)
-
-        engine_test = AdvancedBacktestEngine()
-        res = engine_test.run(test_df)
-
-        if res["total_trades"] > 0:
-            win_rates.append(res["win_rate"])
-            profit_factors.append(res["profit_factor"])
-            folds.append({
-                "fold": f_idx + 1,
-                "trades": res["total_trades"],
-                "win_rate": res["win_rate"],
-                "profit_factor": res["profit_factor"],
-                "net_profit": res["net_profit"],
-                "drawdown": res["max_drawdown_pct"]
-            })
-
-    std_wr = float(np.std(win_rates)) if win_rates else 0.0
-    avg_pf = float(np.mean(profit_factors)) if profit_factors else 0.0
-    is_robust = std_wr <= 8.0
-
-    print(f"[OK] Rolling WFO Complete: {len(folds)} Folds | Win Rate Std Dev: {std_wr:.2f}% (Target <= 8.0%) | Robust: {is_robust}")
-
-    return {
-        "folds": folds,
-        "win_rate_std": round(std_wr, 2),
-        "avg_profit_factor": round(avg_pf, 2),
-        "is_robust": is_robust
-    }
+    for start in range(0, len(df)-window_bars+1, step_bars):
+        result = AdvancedBacktestEngine().run(df.iloc[start:start+window_bars].reset_index(drop=True))
+        folds.append({k: result[k] for k in ("total_trades", "win_rate", "profit_factor", "net_profit", "max_drawdown_pct")})
+    enough = len(folds) >= 5 and all(f["total_trades"] >= 30 for f in folds)
+    std = float(np.std([f["win_rate"] for f in folds])) if folds else None
+    threshold_pass = enough and std <= 8 and all(f["profit_factor"] > 1.2 and f["net_profit"] > 0 and f["max_drawdown_pct"] <= 5 for f in folds)
+    return {"folds": folds, "sample_sufficient": enough, "win_rate_std": std, "diagnostic_pass": threshold_pass,
+            "live_validated": False, "method": "Non-overlapping fixed-parameter evaluation; no optimization"}
 
 
-def generate_html_report(in_metrics: Dict[str, Any], out_metrics: Dict[str, Any], all_metrics: Dict[str, Any], wfo_results: Dict[str, Any], output_path: str):
-    trades = all_metrics["trades"]
-    eq = all_metrics["equity_curve"]
-    min_eq = min(eq)
-    max_eq = max(eq)
-    rng_eq = max_eq - min_eq if max_eq != min_eq else 1.0
+def write_reports(frame, metrics, split_results, folds, source, output_dir):
+    output = Path(output_dir)
+    output.mkdir(parents=True, exist_ok=True)
+    config_bytes = Path("strategy_config.json").read_bytes()
+    compact = {k: v for k, v in metrics.items() if k not in ("trades", "equity_curve", "timestamps")}
+    manifest = {"source": source, "bars": len(frame), "config_sha256": hashlib.sha256(config_bytes).hexdigest(),
+                "first_utc": pd.to_datetime(frame.timestamp.iloc[0], unit="ms", utc=True).isoformat(),
+                "last_utc": pd.to_datetime(frame.timestamp.iloc[-1], unit="ms", utc=True).isoformat(),
+                "live_validated": False, "metrics": compact, "folds": folds}
+    # Strict JSON: infinity is displayed as null, never a fabricated numeric PF.
+    def sanitize(value):
+        if isinstance(value, dict): return {str(k): sanitize(v) for k,v in value.items()}
+        if isinstance(value, (list, tuple)): return [sanitize(v) for v in value]
+        if isinstance(value, (float, np.floating)) and not math.isfinite(value): return None
+        if isinstance(value, np.generic): return value.item()
+        return value
+    (output / "safe_scalper_validation.json").write_text(json.dumps(sanitize(manifest), indent=2, allow_nan=False)+"\n")
 
-    svg_points = " ".join([f"{(i / max(len(eq)-1, 1)) * 800:.1f},{180 - ((v - min_eq) / rng_eq) * 160:.1f}" for i, v in enumerate(eq[::max(1, len(eq)//300)])])
+    rows = []
+    for label, result in [("Earlier 70% (fixed settings)", split_results[0]), ("Later 30% (fixed settings)", split_results[1]), ("Full dataset", metrics)]:
+        rows.append(f"| {label} | {result['total_trades']} | {result['profit_factor']:.2f} | {result['net_profit']:.2f} | {result['max_drawdown_pct']:.2f}% |")
+    report = f"""# SafeScalper research audit — NOT LIVE VALIDATED
 
-    trade_rows_html = ""
-    for t in trades[-50:]:
-        is_win = t.pnl >= 0
-        col = "#2fc98f" if is_win else "#f0546c"
-        date_str = datetime.fromtimestamp(t.entry_time / 1000.0, tz=timezone.utc).strftime("%Y-%m-%d %H:%M")
-        trade_rows_html += f"""
-        <tr style="border-bottom: 1px solid #1e293b;">
-            <td style="padding: 8px 12px; font-weight: bold; color: #60a5fa;">#{t.ticket}</td>
-            <td style="padding: 8px 12px; color: #94a3b8;">{date_str}</td>
-            <td style="padding: 8px 12px;"><span style="background: {'rgba(47,201,143,0.15)' if t.side == 'LONG' else 'rgba(240,84,108,0.15)'}; color: {col}; padding: 2px 6px; border-radius: 4px; font-weight: bold; font-size: 10px;">{t.side}</span></td>
-            <td style="padding: 8px 12px; text-align: right; color: #e2e8f0;">${t.entry_price:.2f}</td>
-            <td style="padding: 8px 12px; text-align: right; color: #e2e8f0;">${t.exit_price:.2f}</td>
-            <td style="padding: 8px 12px; text-align: center;"><span style="background: {'#2fc98f' if is_win else '#f0546c'}; color: #000; padding: 2px 6px; border-radius: 4px; font-weight: 800; font-size: 10px;">{t.outcome}</span></td>
-            <td style="padding: 8px 12px; text-align: right; color: {col}; font-weight: bold;">{'+' if t.r_multiple >= 0 else ''}{t.r_multiple:.2f}R</td>
-            <td style="padding: 8px 12px; text-align: right; color: {col}; font-weight: bold;">{'+' if t.pnl >= 0 else ''}${t.pnl:.2f}</td>
-            <td style="padding: 8px 12px; color: #cbd5e1;">{t.setup_name}</td>
-            <td style="padding: 8px 12px; color: #eab308; font-size: 10px;">{t.regime}</td>
-        </tr>
-        """
+Source: **{source['label']}**. {len(frame):,} completed M5 bars.
+Period: {manifest['first_utc']} → {manifest['last_utc']}.
+Config SHA-256: {manifest['config_sha256']}
 
-    fold_rows_html = "".join([f"""
-    <tr style="border-bottom: 1px solid #1e293b;">
-        <td style="padding: 6px 12px; font-weight: bold; color: #f6d489;">Fold {f['fold']}</td>
-        <td style="padding: 6px 12px; text-align: right;">{f['trades']}</td>
-        <td style="padding: 6px 12px; text-align: right; color: #60a5fa; font-weight: bold;">{f['win_rate']:.1f}%</td>
-        <td style="padding: 6px 12px; text-align: right; color: #2fc98f; font-weight: bold;">{f['profit_factor']:.2f}</td>
-        <td style="padding: 6px 12px; text-align: right; color: #2fc98f;">+${f['net_profit']:.2f}</td>
-        <td style="padding: 6px 12px; text-align: right; color: #94a3b8;">{f['drawdown']:.1f}%</td>
-    </tr>
-    """ for f in wfo_results["folds"]])
+| Evaluation | Trades | Profit factor | Net P/L (USD model) | Mark-to-market DD |
+|---|---:|---:|---:|---:|
+{chr(10).join(rows)}
 
-    html = f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <title>Trading Flow PRO — Institutional Gold (XAUUSD) Backtest Audit Report</title>
-    <style>
-        body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, monospace; background: #070c16; color: #e2e8f0; margin: 0; padding: 24px; }}
-        .card {{ background: #0f172a; border: 1px solid #1e293b; border-radius: 12px; padding: 20px; margin-bottom: 20px; box-shadow: 0 4px 20px rgba(0,0,0,0.5); }}
-        .kpi-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }}
-        .kpi {{ background: #131d33; border: 1px solid #243552; border-radius: 8px; padding: 14px; text-align: center; }}
-        .kpi-title {{ font-size: 10px; color: #94a3b8; font-weight: bold; letter-spacing: 0.1em; text-transform: uppercase; }}
-        .kpi-val {{ font-size: 20px; font-weight: 900; margin-top: 4px; }}
-        .green {{ color: #2fc98f; }}
-        .gold {{ color: #f6d489; }}
-        .blue {{ color: #60a5fa; }}
-        table {{ width: 100%; border-collapse: collapse; font-size: 11.5px; text-align: left; }}
-        th {{ background: #090e18; padding: 10px 12px; color: #94a3b8; font-size: 10px; text-transform: uppercase; border-bottom: 1px solid #1e293b; }}
-    </style>
-</head>
-<body>
-    <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #1e293b; padding-bottom: 16px; margin-bottom: 20px;">
-        <div>
-            <h1 style="margin: 0; font-size: 24px; color: #fff; display: flex; align-items: center; gap: 8px;">
-                <span style="background: linear-gradient(135deg, #e8b44c, #f6d489); color: #000; padding: 4px 10px; border-radius: 6px; font-weight: 900; font-size: 14px;">TF</span>
-                Trading Flow PRO — Institutional Gold (XAUUSD) Strategy Audit
-            </h1>
-            <p style="margin: 4px 0 0 0; font-size: 12px; color: #94a3b8;">Multi-Timeframe (4H + 15m + 5m) · Liquidity Heat Maps · Order Flow · Rolling WFO</p>
-        </div>
-        <div style="text-align: right;">
-            <span style="background: rgba(47,201,143,0.15); color: #2fc98f; border: 1px solid rgba(47,201,143,0.3); padding: 6px 12px; border-radius: 8px; font-weight: bold; font-size: 12px;">PARAMETERS ROBUST (Std &lt; 8%) ✓</span>
-        </div>
-    </div>
+## Validation boundary
 
-    <!-- KPI GRID -->
-    <div class="card">
-        <h2 style="font-size: 14px; margin-top: 0; margin-bottom: 14px; color: #f6d489;">🏆 EXECUTIVE PERFORMANCE OVERVIEW</h2>
-        <div class="kpi-grid">
-            <div class="kpi">
-                <div class="kpi-title">NET PROFIT</div>
-                <div class="kpi-val green">+${all_metrics['net_profit']:,.2f}</div>
-                <div style="font-size: 10px; color: #2fc98f; margin-top: 2px;">+{all_metrics['return_pct']:.1f}% Return</div>
-            </div>
-            <div class="kpi">
-                <div class="kpi-title">PROFIT FACTOR</div>
-                <div class="kpi-val gold">{all_metrics['profit_factor']:.2f}</div>
-                <div style="font-size: 10px; color: #94a3b8; margin-top: 2px;">Target &gt; 1.80</div>
-            </div>
-            <div class="kpi">
-                <div class="kpi-title">WIN RATE</div>
-                <div class="kpi-val blue">{all_metrics['win_rate']:.1f}%</div>
-                <div style="font-size: 10px; color: #94a3b8; margin-top: 2px;">{all_metrics['win_count']}W / {all_metrics['loss_count']}L</div>
-            </div>
-            <div class="kpi">
-                <div class="kpi-title">MAX DRAWDOWN</div>
-                <div class="kpi-val green">{all_metrics['max_drawdown_pct']:.1f}%</div>
-                <div style="font-size: 10px; color: #94a3b8; margin-top: 2px;">${all_metrics['max_drawdown_usd']:,.2f} (Target &lt; 15%)</div>
-            </div>
-            <div class="kpi">
-                <div class="kpi-title">SHARPE RATIO</div>
-                <div class="kpi-val gold">{all_metrics['sharpe_ratio']:.2f}</div>
-                <div style="font-size: 10px; color: #94a3b8; margin-top: 2px;">Annualized</div>
-            </div>
-            <div class="kpi">
-                <div class="kpi-title">SORTINO RATIO</div>
-                <div class="kpi-val gold">{all_metrics['sortino_ratio']:.2f}</div>
-                <div style="font-size: 10px; color: #94a3b8; margin-top: 2px;">Downside Adjusted</div>
-            </div>
-            <div class="kpi">
-                <div class="kpi-title">AVG R:R RATIO</div>
-                <div class="kpi-val blue">1:{all_metrics['avg_rr_ratio']:.1f}</div>
-                <div style="font-size: 10px; color: #94a3b8; margin-top: 2px;">High Expectancy</div>
-            </div>
-            <div class="kpi">
-                <div class="kpi-title">WFO STABILITY</div>
-                <div class="kpi-val green">±{wfo_results['win_rate_std']:.1f}%</div>
-                <div style="font-size: 10px; color: #94a3b8; margin-top: 2px;">Std &lt; 8.0% (Robust)</div>
-            </div>
-        </div>
-    </div>
+- This is a bar-based software/research test, not broker real-tick validation.
+- Synthetic results do not measure a real trading edge. Imported OHLCV also lacks intra-bar tick order.
+- SL is checked before TP on ambiguous bars; stop gaps use the adverse opening price.
+- Spread, fixed slippage and round-trip commission are modeled; missing historical news is NOT reconstructed.
+- Server/news/calendar behavior, broker fills and exact MetaEditor indicator seeding need Windows MT5 verification.
+- Real-account execution remains blocked regardless of these metrics.
 
-    <!-- ROLLING WFO TABLE -->
-    <div class="card">
-        <h2 style="font-size: 14px; margin-top: 0; margin-bottom: 12px; color: #60a5fa;">🔬 ROLLING WALK-FORWARD OPTIMIZATION & FOLD CONSISTENCY</h2>
-        <table>
-            <thead>
-                <tr>
-                    <th>Fold Window</th>
-                    <th style="text-align: right;">Executed Trades</th>
-                    <th style="text-align: right;">Win Rate</th>
-                    <th style="text-align: right;">Profit Factor</th>
-                    <th style="text-align: right;">Net Profit</th>
-                    <th style="text-align: right;">Max Drawdown</th>
-                </tr>
-            </thead>
-            <tbody>
-                {fold_rows_html}
-            </tbody>
-        </table>
-    </div>
+## Fixed-parameter rolling windows
 
-    <!-- SVG BALANCE CURVE -->
-    <div class="card">
-        <h2 style="font-size: 14px; margin-top: 0; margin-bottom: 12px; color: #fff;">📈 COMPOUNDED BALANCE GROWTH CURVE</h2>
-        <svg viewBox="0 0 800 200" style="width: 100%; height: 220px; background: #090e18; border-radius: 8px; border: 1px solid #1e293b;">
-            <polyline fill="none" stroke="#60a5fa" stroke-width="2" points="{svg_points}" />
-        </svg>
-        <div style="display: flex; justify-content: space-between; font-size: 10px; color: #94a3b8; margin-top: 6px;">
-            <span>Initial: ${all_metrics['initial_balance']:,.2f}</span>
-            <span>Peak: ${max_eq:,.2f}</span>
-            <span>Final: ${all_metrics['final_balance']:,.2f}</span>
-        </div>
-    </div>
+{len(folds['folds'])} non-overlapping windows; no parameter search or optimization.
+Sufficient sample (at least 5 windows, 30 trades each): **{folds['sample_sufficient']}**.
+Win-rate standard deviation: **{folds['win_rate_std'] if folds['win_rate_std'] is not None else 'unavailable'}**.
+Diagnostic thresholds passed: **{folds['diagnostic_pass']}**. This is never permission for live trading.
 
-    <!-- RECENT TRADE AUDIT LOG -->
-    <div class="card">
-        <h2 style="font-size: 14px; margin-top: 0; margin-bottom: 12px; color: #fff;">📋 RECENT TRADE EXECUTION LEDGER ({len(trades)} TOTAL TRADES)</h2>
-        <div style="overflow-x: auto;">
-            <table>
-                <thead>
-                    <tr>
-                        <th>Ticket</th>
-                        <th>Date (UTC)</th>
-                        <th>Side</th>
-                        <th style="text-align: right;">Entry</th>
-                        <th style="text-align: right;">Exit</th>
-                        <th style="text-align: center;">Outcome</th>
-                        <th style="text-align: right;">R-Mult</th>
-                        <th style="text-align: right;">Net P&L</th>
-                        <th>Setup Name</th>
-                        <th>Market Regime</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {trade_rows_html}
-                </tbody>
-            </table>
-        </div>
-    </div>
-</body>
-</html>
+## Small-account caution
+
+Minimum lot, commission and spread can consume a large part of a small risk budget.
+Native MT5 account-currency profit/margin calculations remain mandatory before demo submission.
+No profitability or account-growth claim is made by this report.
 """
-    with open(output_path, "w") as f:
-        f.write(html)
-    print(f"[OK] Interactive HTML Audit Report saved to: {output_path}")
-
-
-def generate_markdown_report(in_metrics: Dict[str, Any], out_metrics: Dict[str, Any], all_metrics: Dict[str, Any], wfo_results: Dict[str, Any], output_path: str):
-    md = f"""# Trading Flow PRO — Institutional Gold (XAUUSD) Strategy Audit
-
-## 📊 Executive Summary
-
-- **Instrument**: XAUUSD (Gold Spot)
-- **Multi-Timeframe Model**: 4H Macro Trend + 15m Structural AOI + 5m Execution
-- **Initial Capital**: ${all_metrics['initial_balance']:,.2f}
-- **Final Balance**: **${all_metrics['final_balance']:,.2f}**
-- **Net Profit**: **+${all_metrics['net_profit']:,.2f} (+{all_metrics['return_pct']:.2f}%)**
-- **Profit Factor**: **{all_metrics['profit_factor']:.2f}** (Target > 1.8)
-- **Sharpe Ratio**: **{all_metrics['sharpe_ratio']:.2f}** (Target > 1.5)
-- **Sortino Ratio**: **{all_metrics['sortino_ratio']:.2f}** (Target > 2.0)
-- **Max Drawdown**: **{all_metrics['max_drawdown_pct']:.2f}% (${all_metrics['max_drawdown_usd']:,.2f})** (Target < 12%)
-- **Win Rate**: **{all_metrics['win_rate']:.2f}%** ({all_metrics['win_count']} Wins / {all_metrics['loss_count']} Losses)
-- **Average Realized R:R**: **1:{all_metrics['avg_rr_ratio']:.2f}**
-- **WFO Stability**: **±{wfo_results['win_rate_std']:.2f}%** (Target <= 8.0% — **ROBUST**)
-
----
-
-## 🔬 Walk-Forward Optimization & Fold Consistency
-
-| Metric | In-Sample (70% Training) | Out-of-Sample (30% Testing) | Full 1-Year Dataset |
-|---|---|---|---|
-| **Total Trades** | {in_metrics['total_trades']} | {out_metrics['total_trades']} | {all_metrics['total_trades']} |
-| **Win Rate** | {in_metrics['win_rate']:.1f}% | {out_metrics['win_rate']:.1f}% | {all_metrics['win_rate']:.1f}% |
-| **Profit Factor** | {in_metrics['profit_factor']:.2f} | {out_metrics['profit_factor']:.2f} | {all_metrics['profit_factor']:.2f} |
-| **Net Profit** | +${in_metrics['net_profit']:,.2f} | +${out_metrics['net_profit']:,.2f} | +${all_metrics['net_profit']:,.2f} |
-| **Max Drawdown** | {in_metrics['max_drawdown_pct']:.1f}% | {out_metrics['max_drawdown_pct']:.1f}% | {all_metrics['max_drawdown_pct']:.1f}% |
-
-> **Validation Status**: **PASSED ✓** — Strategy demonstrates robust parameter stability across all sequential rolling folds with Win-Rate standard deviation of only {wfo_results['win_rate_std']}%.
-"""
-    with open(output_path, "w") as f:
-        f.write(md)
-    print(f"[OK] Markdown Audit Report saved to: {output_path}")
+    (output / "safe_scalper_backtest_audit.md").write_text(report)
+    # Small, auditable HTML report with correctly distributed equity points.
+    curve = metrics["equity_curve"]
+    sample_indices = np.linspace(0, len(curve)-1, min(300, len(curve))).astype(int)
+    lo, hi = min(curve), max(curve)
+    points = " ".join(f"{idx/max(len(curve)-1,1)*900:.2f},{190-(curve[idx]-lo)/max(hi-lo,1e-9)*160:.2f}" for idx in sample_indices)
+    page = f"""<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width">
+<title>SafeScalper · Research audit</title><style>body{{font:14px/1.6 system-ui;background:#0b1019;color:#e2e8f0;max-width:1100px;margin:40px auto;padding:24px}}pre{{white-space:pre-wrap;overflow-wrap:anywhere}}svg{{width:100%;background:#111b2a;border-radius:16px}}h1{{color:#fbbf24}}</style>
+<h1>Research only · Live execution NOT validated</h1><svg role="img" aria-label="Mark-to-market equity curve" viewBox="0 0 900 220"><polyline fill="none" stroke="#60a5fa" stroke-width="2" points="{points}"/></svg><pre>{html.escape(report)}</pre></html>"""
+    (output / "safe_scalper_backtest_report.html").write_text(page)
+    print(f"[OK] Reports written to {output.resolve()} — live_validated=false")
 
 
 def main():
-    os.makedirs("reports", exist_ok=True)
-    df = generate_realistic_gold_data(days=365, timeframe_mins=15)
-
-    split_idx = int(len(df) * 0.70)
-    in_sample_df = df.iloc[:split_idx].reset_index(drop=True)
-    out_sample_df = df.iloc[split_idx:].reset_index(drop=True)
-
-    print("\n--- 1. RUNNING IN-SAMPLE (70%) SIMULATION ---")
-    engine_in = AdvancedBacktestEngine()
-    in_metrics = engine_in.run(in_sample_df)
-
-    print("\n--- 2. RUNNING OUT-OF-SAMPLE (30%) VALIDATION ---")
-    engine_out = AdvancedBacktestEngine()
-    out_metrics = engine_out.run(out_sample_df)
-
-    print("\n--- 3. RUNNING FULL 1-YEAR SIMULATION ---")
-    engine_all = AdvancedBacktestEngine()
-    all_metrics = engine_all.run(df)
-
-    wfo_results = rolling_walk_forward_analysis(df)
-
-    generate_html_report(in_metrics, out_metrics, all_metrics, wfo_results, "reports/institutional_gold_backtest_report.html")
-    generate_markdown_report(in_metrics, out_metrics, all_metrics, wfo_results, "reports/institutional_gold_backtest_audit.md")
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--csv", help="Broker-exported M5 OHLCV CSV/TSV")
+    parser.add_argument("--broker-utc-offset-hours", type=float)
+    parser.add_argument("--days", type=int, default=365, help="Synthetic smoke-test duration when --csv is absent")
+    parser.add_argument("--skip-folds", action="store_true")
+    parser.add_argument("--output-dir", default="reports")
+    args = parser.parse_args()
+    if args.csv:
+        frame = load_broker_csv(args.csv, args.broker_utc_offset_hours)
+        source = {"label": "Imported broker OHLCV — NOT real ticks", "path": str(Path(args.csv).resolve()), "sha256": hashlib.sha256(Path(args.csv).read_bytes()).hexdigest()}
+    else:
+        if not 7 <= args.days <= 3650: parser.error("--days must be 7–3650")
+        frame = generate_realistic_gold_data(args.days)
+        source = {"label": "SYNTHETIC smoke test — no broker market-data evidence", "seed": 42791}
+    split = int(len(frame)*.7)
+    earlier = AdvancedBacktestEngine().run(frame.iloc[:split].reset_index(drop=True))
+    later = AdvancedBacktestEngine().run(frame.iloc[split:].reset_index(drop=True))
+    full = AdvancedBacktestEngine().run(frame)
+    folds = rolling_walk_forward_analysis(frame) if not args.skip_folds else {"folds": [], "sample_sufficient": False, "win_rate_std": None, "diagnostic_pass": False, "live_validated": False}
+    write_reports(frame, full, (earlier, later), folds, source, args.output_dir)
 
 
 if __name__ == "__main__":

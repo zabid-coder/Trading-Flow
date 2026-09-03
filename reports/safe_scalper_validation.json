@@ -1,0 +1,145 @@
+{
+  "source": {
+    "label": "SYNTHETIC smoke test \u2014 no broker market-data evidence",
+    "seed": 42791
+  },
+  "bars": 105120,
+  "config_sha256": "da029aaec04c965b724a67ebf0550eff91bd7b934562452b94dc3c1fbea20cbd",
+  "first_utc": "2025-01-01T00:00:00+00:00",
+  "last_utc": "2025-12-31T23:55:00+00:00",
+  "live_validated": false,
+  "metrics": {
+    "initial_balance": 500,
+    "final_balance": 474.64,
+    "net_profit": -25.36,
+    "return_pct": -5.07,
+    "total_trades": 24,
+    "win_count": 2,
+    "loss_count": 22,
+    "win_rate": 8.33,
+    "profit_factor": 0.09,
+    "max_drawdown_pct": 5.07,
+    "max_drawdown_usd": 25.36,
+    "recovery_factor": -1.0,
+    "sharpe_ratio": -1.13,
+    "sortino_ratio": -0.05,
+    "avg_win_usd": 1.23,
+    "avg_loss_usd": 1.26,
+    "avg_rr_ratio": 0.98,
+    "expectancy_usd": -1.05
+  },
+  "folds": {
+    "folds": [
+      {
+        "total_trades": 24,
+        "win_rate": 8.33,
+        "profit_factor": 0.09,
+        "net_profit": -25.36,
+        "max_drawdown_pct": 5.07
+      },
+      {
+        "total_trades": 20,
+        "win_rate": 10.0,
+        "profit_factor": 0.09,
+        "net_profit": -23.77,
+        "max_drawdown_pct": 5.02
+      },
+      {
+        "total_trades": 19,
+        "win_rate": 0.0,
+        "profit_factor": 0.0,
+        "net_profit": -25.84,
+        "max_drawdown_pct": 5.17
+      },
+      {
+        "total_trades": 27,
+        "win_rate": 11.11,
+        "profit_factor": 0.11,
+        "net_profit": -25.45,
+        "max_drawdown_pct": 5.09
+      },
+      {
+        "total_trades": 27,
+        "win_rate": 11.11,
+        "profit_factor": 0.1,
+        "net_profit": -25.8,
+        "max_drawdown_pct": 5.16
+      },
+      {
+        "total_trades": 20,
+        "win_rate": 5.0,
+        "profit_factor": 0.05,
+        "net_profit": -25.22,
+        "max_drawdown_pct": 5.04
+      },
+      {
+        "total_trades": 25,
+        "win_rate": 8.0,
+        "profit_factor": 0.08,
+        "net_profit": -24.12,
+        "max_drawdown_pct": 4.82
+      },
+      {
+        "total_trades": 24,
+        "win_rate": 16.67,
+        "profit_factor": 0.2,
+        "net_profit": -15.6,
+        "max_drawdown_pct": 3.32
+      },
+      {
+        "total_trades": 28,
+        "win_rate": 7.14,
+        "profit_factor": 0.07,
+        "net_profit": -23.68,
+        "max_drawdown_pct": 4.74
+      },
+      {
+        "total_trades": 23,
+        "win_rate": 4.35,
+        "profit_factor": 0.04,
+        "net_profit": -24.78,
+        "max_drawdown_pct": 5.1
+      },
+      {
+        "total_trades": 26,
+        "win_rate": 3.85,
+        "profit_factor": 0.03,
+        "net_profit": -25.53,
+        "max_drawdown_pct": 5.11
+      },
+      {
+        "total_trades": 28,
+        "win_rate": 7.14,
+        "profit_factor": 0.06,
+        "net_profit": -21.65,
+        "max_drawdown_pct": 4.46
+      },
+      {
+        "total_trades": 20,
+        "win_rate": 15.0,
+        "profit_factor": 0.09,
+        "net_profit": -14.79,
+        "max_drawdown_pct": 2.96
+      },
+      {
+        "total_trades": 22,
+        "win_rate": 9.09,
+        "profit_factor": 0.1,
+        "net_profit": -20.14,
+        "max_drawdown_pct": 4.03
+      },
+      {
+        "total_trades": 19,
+        "win_rate": 5.26,
+        "profit_factor": 0.06,
+        "net_profit": -17.23,
+        "max_drawdown_pct": 3.72
+      }
+    ],
+    "sample_sufficient": false,
+    "win_rate_std": 4.171824008219373,
+    "diagnostic_pass": false,
+    "live_validated": false,
+    "method": "Non-overlapping fixed-parameter evaluation; no optimization"
+  }
+}

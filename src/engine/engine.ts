@@ -1,2226 +1,922 @@
-import { BAR_MS, DAY_MS, mulberry32, nextBar } from "./market";
 import type {
-  Aoi,
   Bar,
-  CandleClass,
-  CheckStep,
+  BrokerSymbolSpec,
   EngineConfig,
   EngineState,
-  SessionLevels,
+  EngineStats,
+  GateResult,
+  QueueItem,
+  RiskDecision,
+  SafeTelemetry,
+  Side,
   Trade,
 } from "./types";
-import { DAY_NAMES, defaultWindowGrid, fmtP, fmtUSD, windowParts } from "./types";
+import { SUPPORTED_SYMBOLS, TIMEFRAMES } from "./types";
+import {
+  ACCOUNT_BALANCE,
+  COMMISSION_PER_LOT,
+  MAX_DEVIATION_POINTS,
+  SAFE_DEFAULTS,
+} from "./config";
 
-const BASE_T = Date.UTC(2025, 2, 3, 0, 0, 0); // simulated feed epoch
-
-export const DEFAULT_CFG: EngineConfig = {
-  identity: "reversal",
-  selectedStrategy: "creamer_4layer",
-  strategyMode: "single",
-  enabledStrategies: {
-    creamer_4layer: true,
-    asian_fakeout: true,
-    ema_pullback: false, // Turned OFF by default to eliminate low-winrate 50-EMA chop
-    rsi_exhaustion: true,
-    session_breakout: true,
-  },
-  minConfluenceCount: 2,
-  account: 1000,
-  riskUSD: 15,
-  rr: 2.5,
-  maxDailySL: 2,
-  rejThresh: 0.58,
-  powerAtr: 1.2,
-  pointValue: 1.0, // XAUUSD: $1.00 P&L per oz per $1.00 move
-  tripleTol: 0.14,
-  spread: 0.35, // realistic gold spread
-  actionCenter: true, // supervised execution ON
-  windowEnabled: false,
-  windowGrid: defaultWindowGrid(),
-  telegram: false,
-  aoi: {
-    pdh: true,
-    triple: false, // Turned OFF by default — eliminates 4th-touch liquidity breakout traps
-    ob: false, // Turned OFF by default — eliminates naked order block chop
-    session: true,
-  },
-  feedMode: "simulated",
-  activeSymbol: "XAUUSD",
-  timeframe: "15m",
-  chartView: "native",
-  autoBreakeven: false,
-  beThresholdR: 1.8,
-  soundEnabled: true,
-  sizingMode: "percentEquity",
-  equityRiskPct: 1.5,
-  kellyFraction: 0.35,
-  trailingStop: false,
-  trailThresholdR: 2.2,
-  trailAtrDist: 1.2,
-  slippagePoints: 0.10,
-  minSlAtr: 1.0,
-  maxSlAtr: 3.5,
-  trendFilter: true,
-  killzoneFilter: true,
-  confluenceGate: 75,
-  maxDailyTrades: 3,
-  rbEnabled: false,
-  rbStartH: 7,
-  rbStartM: 0,
-  rbEndH: 10,
-  rbEndM: 0,
-  rbBufferPoints: 20, // points (like $2.00 in gold)
+const EMPTY_RISK: RiskDecision = {
+  allowed: false,
+  reason: "Waiting for market data",
+  lots: 0,
+  expectedLoss: 0,
+  riskBudget: 0,
+  marginRequired: 0,
+  effectiveStopPoints: 0,
+  effectiveTakeProfitPoints: 0,
+};
+const EMPTY_TELEMETRY: SafeTelemetry = {
+  side: "NONE",
+  emaFast: 0,
+  emaSlow: 0,
+  atr: 0,
+  rsi: 50,
+  breakoutHigh: 0,
+  breakoutLow: 0,
+  gates: [],
+  risk: EMPTY_RISK,
 };
 
-const seenZones = new WeakMap<EngineState, Set<string>>();
+export const DEFAULT_SIM_SPEC: BrokerSymbolSpec = {
+  ready: true,
+  symbol: "XAUUSD",
+  digits: 2,
+  point: 0.01,
+  tickSize: 0.01,
+  tickValue: 1,
+  contractSize: 100,
+  volumeMin: 0.01,
+  volumeMax: 100,
+  volumeStep: 0.01,
+  stopsLevel: 0,
+  freezeLevel: 0,
+  spreadPoints: 2.5,
+  balance: 500,
+  equity: 500,
+  freeMargin: 500,
+  currency: "USD",
+  marginPerMinLot: 26.5,
+  lossPerLot100Points: 100,
+  source: "SIMULATION",
+  checkedAt: Date.now(),
+  warning:
+    "Simulation contract specification — connect MT5 before live execution.",
+};
 
-function ev(
-  st: EngineState,
-  time: number,
-  tag: "ENTRY" | "SL" | "TP" | "SYS" | "AOI" | "RISK" | "HOLD" | "DECIDE",
-  tone: "long" | "short" | "sys" | "risk" | "aoi",
-  msg: string
-) {
-  st.events.push({ id: st.nextId++, time, tag, msg, tone });
-  if (st.events.length > 140) st.events.splice(0, st.events.length - 140);
-}
+export const DEFAULT_CFG: EngineConfig = {
+  accountBalance: ACCOUNT_BALANCE,
+  activeSymbol: "XAUUSD",
+  timeframe: "5m",
+  feedMode: "simulated",
+  executionMode: "supervised",
+  soundEnabled: true,
+  brokerSpec: DEFAULT_SIM_SPEC,
+  newsLocked: false,
+  safe: { ...SAFE_DEFAULTS },
+};
 
-/* ------------------------------------------------------------------ */
-/*  Candle classification — Strict Reaction Morphology filter          */
-/* ------------------------------------------------------------------ */
-export function classify(bar: Bar, atr: number, cfg: EngineConfig): CandleClass {
-  const range = bar.h - bar.l;
-  if (range <= 0 || range < 0.25 * atr) return "BORING";
-  const body = Math.abs(bar.c - bar.o);
-  const up = bar.h - Math.max(bar.o, bar.c);
-  const dn = Math.min(bar.o, bar.c) - bar.l;
-
-  // Strict wick-to-body & opposing-wick morphology
-  if (dn >= range * cfg.rejThresh && dn > body * 1.35 && up <= range * 0.28) return "LPR";
-  if (up >= range * cfg.rejThresh && up > body * 1.35 && dn <= range * 0.28) return "HPR";
-  if (body >= 0.65 * range && range >= cfg.powerAtr * atr)
-    return bar.c > bar.o ? "POWER_BULL" : "POWER_BEAR";
-  if (body <= 0.15 * range) return "BORING"; // spinning top / doji
-  if (bar.c > bar.o && up >= range * 0.38 && dn < range * 0.18) return "BORING"; // wick fighting momentum
-  if (bar.c < bar.o && dn >= range * 0.38 && up < range * 0.18) return "BORING";
-  return "NEUTRAL";
-}
-
-/* ------------------------------------------------------------------ */
-/*  Areas of Interest                                                  */
-/* ------------------------------------------------------------------ */
-function hourOf(t: number) {
-  return Math.floor(((t % DAY_MS) + DAY_MS) / 3600000) % 24;
-}
-
-function dayStartIndex(bars: Bar[]): number {
-  const d = bars[bars.length - 1].day;
-  let i = bars.length - 1;
-  while (i > 0 && bars[i - 1].day === d) i--;
-  return i;
-}
-
-function computeSessionLevels(bars: Bar[], day: number): SessionLevels | null {
-  let lonH = -1e9, lonL = 1e9, nyH = -1e9, nyL = 1e9, ovlH = -1e9, ovlL = 1e9;
-  let hasLon = false, hasNy = false, hasOvl = false;
-  for (const b of bars) {
-    if (b.day !== day) continue;
-    const h = hourOf(b.t);
-    if (h >= 7 && h <= 15) { lonH = Math.max(lonH, b.h); lonL = Math.min(lonL, b.l); hasLon = true; }
-    if (h >= 12 && h <= 20) { nyH = Math.max(nyH, b.h); nyL = Math.min(nyL, b.l); hasNy = true; }
-    if (h >= 12 && h <= 15) { ovlH = Math.max(ovlH, b.h); ovlL = Math.min(ovlL, b.l); hasOvl = true; }
-  }
-  if (!hasLon || !hasNy || !hasOvl) return null;
-  return { lonH, lonL, nyH, nyL, ovlH, ovlL };
-}
-
-function buildAois(st: EngineState, cfg: EngineConfig, cdhPrev: number, cdlPrev: number) {
-  const A: Aoi[] = [];
-  const bars = st.bars;
-  const n = bars.length;
-  const atr = st.atr || 1.0;
-  const close = bars[n - 1].c;
-  const dsi = dayStartIndex(bars);
-  const barsInDay = n - dsi;
-
-  const dedupSet = new Set<string>();
-  const addZone = (aoi: Aoi) => {
-    const key = `${aoi.role}:${Math.round(aoi.ty / Math.max(0.01, 0.25 * atr))}`;
-    if (!dedupSet.has(key)) {
-      dedupSet.add(key);
-      A.push(aoi);
-    }
+function mulberry32(seed: number) {
+  let a = seed >>> 0;
+  return () => {
+    a |= 0;
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
-
-  // Type D — PDH / PDL + live CDH / CDL
-  if (cfg.aoi.pdh) {
-    if (st.pdh != null) addZone({ kind: "PDH", role: "R", y1: st.pdh, y2: st.pdh, ty: st.pdh, from: dsi, label: "PDH", active: true });
-    if (st.pdl != null) addZone({ kind: "PDL", role: "S", y1: st.pdl, y2: st.pdl, ty: st.pdl, from: dsi, label: "PDL", active: true });
-    if (barsInDay >= 10 && cdhPrev > 0) {
-      addZone({ kind: "CDH", role: "R", y1: cdhPrev, y2: cdhPrev, ty: cdhPrev, from: dsi, label: "CDH", active: true });
-      addZone({ kind: "CDL", role: "S", y1: cdlPrev, y2: cdlPrev, ty: cdlPrev, from: dsi, label: "CDL", active: true });
-    }
-  }
-
-  // Type C — previous-session highs / lows + London–NY overlap
-  if (cfg.aoi.session && st.ses) {
-    const s = st.ses;
-    addZone({ kind: "LON_H", role: "R", y1: s.lonH, y2: s.lonH, ty: s.lonH, from: dsi, label: "LON HIGH", active: true });
-    addZone({ kind: "LON_L", role: "S", y1: s.lonL, y2: s.lonL, ty: s.lonL, from: dsi, label: "LON LOW", active: true });
-    addZone({ kind: "NY_H", role: "R", y1: s.nyH, y2: s.nyH, ty: s.nyH, from: dsi, label: "NY HIGH", active: true });
-    addZone({ kind: "NY_L", role: "S", y1: s.nyL, y2: s.nyL, ty: s.nyL, from: dsi, label: "NY LOW", active: true });
-    addZone({ kind: "OVL_H", role: "R", y1: s.ovlH, y2: s.ovlH, ty: s.ovlH, from: dsi, label: "OVL HIGH", active: true });
-    addZone({ kind: "OVL_L", role: "S", y1: s.ovlL, y2: s.ovlL, ty: s.ovlL, from: dsi, label: "OVL LOW", active: true });
-  }
-
-  // Type A — triple tops / triple bottoms from confirmed pivots with volume confluence
-  if (cfg.aoi.triple) {
-    const ph: { i: number; p: number; v: number }[] = [];
-    const pl: { i: number; p: number; v: number }[] = [];
-    const from = Math.max(2, n - 130);
-    const avgVol = bars.slice(Math.max(0, n - 25)).reduce((acc, b) => acc + (b.v || 1), 0) / 25;
-
-    for (let i = from; i <= n - 3; i++) {
-      const b = bars[i];
-      if (b.h > bars[i - 1].h && b.h > bars[i - 2].h && b.h > bars[i + 1].h && b.h > bars[i + 2].h) {
-        if ((b.v || 1) >= 0.72 * avgVol) ph.push({ i, p: b.h, v: b.v || 1 });
-      }
-      if (b.l < bars[i - 1].l && b.l < bars[i - 2].l && b.l < bars[i + 1].l && b.l < bars[i + 2].l) {
-        if ((b.v || 1) >= 0.72 * avgVol) pl.push({ i, p: b.l, v: b.v || 1 });
-      }
-    }
-    if (ph.length >= 3) {
-      const [p1, p2, p3] = ph.slice(-3);
-      if (p2.i - p1.i >= 3 && p3.i - p2.i >= 3) {
-        const mx = Math.max(p1.p, p2.p, p3.p);
-        const mn = Math.min(p1.p, p2.p, p3.p);
-        if (mx - mn <= (close * cfg.tripleTol) / 100 || mx - mn <= 0.35 * atr) {
-          let dead = false;
-          for (let j = p3.i + 2; j < n; j++) if (bars[j].c > mx + 0.45 * atr) { dead = true; break; }
-          if (!dead) addZone({ kind: "TT", role: "R", y1: mn, y2: mx, ty: mx, from: p1.i, label: "TRIPLE TOP", active: true });
-        }
-      }
-    }
-    if (pl.length >= 3) {
-      const [p1, p2, p3] = pl.slice(-3);
-      if (p2.i - p1.i >= 3 && p3.i - p2.i >= 3) {
-        const mx = Math.max(p1.p, p2.p, p3.p);
-        const mn = Math.min(p1.p, p2.p, p3.p);
-        if (mx - mn <= (close * cfg.tripleTol) / 100 || mx - mn <= 0.35 * atr) {
-          let dead = false;
-          for (let j = p3.i + 2; j < n; j++) if (bars[j].c < mn - 0.45 * atr) { dead = true; break; }
-          if (!dead) addZone({ kind: "TB", role: "S", y1: mn, y2: mx, ty: mn, from: p1.i, label: "TRIPLE BOTTOM", active: true });
-        }
-      }
-    }
-  }
-
-  // Type B — multi-bar (3-candle) order blocks anchored to valid fair value gaps
-  if (cfg.aoi.ob) {
-    let dCount = 0, sCount = 0;
-    for (let i = n - 3; i >= Math.max(2, n - 90); i--) {
-      if (dCount >= 2 && sCount >= 2) break;
-      const b = bars[i];     // Candle 3
-      const a = bars[i - 2]; // Candle 1 (Order Block origin)
-      const gapMin = 0.10 * atr;
-
-      if (b.l > a.h + gapMin) {
-        // Bullish 3-bar FVG → candle i-2 is the demand order block
-        const y1 = Math.min(a.o, a.c);
-        const y2 = Math.max(a.o, a.c);
-        if (dCount < 2 && y2 <= close - 0.12 * atr && y2 - y1 <= 3.5 * atr && y2 - y1 >= 0.12) {
-          let mit = false;
-          for (let j = i; j < n; j++) if (bars[j].c < y1) { mit = true; break; }
-          if (!mit) {
-            addZone({ kind: "OB_D", role: "S", y1, y2, ty: y1, from: i - 2, label: "DEMAND OB", active: true });
-            dCount++;
-          }
-        }
-      } else if (b.h < a.l - gapMin) {
-        // Bearish 3-bar FVG → candle i-2 is the supply order block
-        const y1 = Math.min(a.o, a.c);
-        const y2 = Math.max(a.o, a.c);
-        if (sCount < 2 && y1 >= close + 0.12 * atr && y2 - y1 <= 3.5 * atr && y2 - y1 >= 0.12) {
-          let mit = false;
-          for (let j = i; j < n; j++) if (bars[j].c > y2) { mit = true; break; }
-          if (!mit) {
-            addZone({ kind: "OB_S", role: "R", y1, y2, ty: y2, from: i - 2, label: "SUPPLY OB", active: true });
-            sCount++;
-          }
-        }
-      }
-    }
-  }
-
-  st.aois = A;
-
-  // announce newly formed zones once
-  let seen = seenZones.get(st);
-  if (!seen) { seen = new Set(); seenZones.set(st, seen); }
-  for (const a of A) {
-    if (a.kind === "TT" || a.kind === "TB" || a.kind === "OB_D" || a.kind === "OB_S") {
-      const key = `${a.kind}:${a.ty.toFixed(1)}:${a.from}`;
-      if (!seen.has(key)) {
-        seen.add(key);
-        ev(st, bars[n - 1].t, "AOI", "aoi", `${a.label} armed · ${fmtP(Math.min(a.y1, a.y2))}–${fmtP(Math.max(a.y1, a.y2))}`);
-      }
-    }
-  }
 }
 
-/* ------------------------------------------------------------------ */
-/*  Trade management & risk engine                                     */
-/* ------------------------------------------------------------------ */
-function settle(st: EngineState, cfg: EngineConfig, t: Trade, bar: Bar, outcome: "TP" | "SL", px: number) {
-  const idx = st.bars.length - 1;
-  const dir = t.side === "LONG" ? 1 : -1;
-  // Slippage only affects favorable exits (TP) — SL fills at the stop price (already worst-case)
-  const slippage = outcome === "TP" ? (cfg.slippagePoints || 0.10) : 0;
-  const realizedPx = outcome === "TP"
-    ? (t.side === "LONG" ? px - slippage : px + slippage)  // TP slightly worse
-    : px;  // SL fills at exact stop price
-  const pnl = dir * t.oz * (realizedPx - t.entry);
-
-  t.open = false;
-  t.outcome = outcome;
-  t.exit = realizedPx;
-  t.exitIndex = idx;
-  t.exitTime = bar.t;
-  t.pnl = pnl;
-  t.slippage = slippage;
-  t.r = pnl / Math.max(1, t.risk);
-  st.balance += pnl;
-  st.open = null;
-
-  if (outcome === "TP") {
-    ev(st, bar.t, "TP", t.side === "LONG" ? "long" : "short",
-      `TP filled +$${pnl.toFixed(0)} (+${t.r.toFixed(1)}R) · ${t.setup}`);
-  } else {
-    st.dailySL += 1;
-    ev(st, bar.t, "SL", "risk",
-      `SL filled −$${Math.abs(pnl).toFixed(0)} · ${t.setup} · daily ${st.dailySL}/${cfg.maxDailySL}`);
-    if (st.dailySL >= cfg.maxDailySL) {
-      st.halted = true;
-      ev(st, bar.t, "SYS", "sys",
-        `Daily loss limit reached — engine HALTED until the next session day. Discipline is the edge.`);
-    }
-  }
+function addEvent(
+  st: EngineState,
+  tag: EngineState["events"][number]["tag"],
+  tone: EngineState["events"][number]["tone"],
+  msg: string,
+  time = Date.now(),
+) {
+  st.events.unshift({ id: st.nextId++, time, tag, tone, msg });
+  if (st.events.length > 120) st.events.length = 120;
 }
 
-function manage(st: EngineState, cfg: EngineConfig, bar: Bar) {
-  const t = st.open;
-  if (!t) return;
-  const atr = st.atr || 2.5;
+function ema(bars: Bar[], period: number, end = bars.length - 1) {
+  const start = 0;
+  let value = bars[start]?.c ?? 0;
+  const k = 2 / (period + 1);
+  for (let i = start + 1; i <= end; i++)
+    value = bars[i].c * k + value * (1 - k);
+  return value;
+}
 
-  // 1. Check Exit conditions (SL and TP) with realistic intrabar direction priority
-  // Spread is already baked into entry price by planTrade — compare raw bar prices to SL/TP
-  if (t.side === "LONG") {
-    if (bar.c >= bar.o) {
-      // Bullish candle: check TP expansion first
-      if (bar.h >= t.tp) {
-        settle(st, cfg, t, bar, "TP", t.tp);
-        return;
-      }
-      if (bar.l <= t.sl) {
-        settle(st, cfg, t, bar, "SL", t.sl);
-        return;
-      }
+function atr(bars: Bar[], period: number, end = bars.length - 1) {
+  const start = 0;
+  let value = 0;
+  let count = 0;
+  for (let i = start; i <= end; i++) {
+    const prev = bars[i - 1]?.c ?? bars[i].o;
+    const tr = Math.max(
+      bars[i].h - bars[i].l,
+      Math.abs(bars[i].h - prev),
+      Math.abs(bars[i].l - prev),
+    );
+    value = count === 0 ? tr : (value * (period - 1) + tr) / period;
+    count++;
+  }
+  return value;
+}
+
+function rsi(bars: Bar[], period: number, end = bars.length - 1) {
+  const start = 0;
+  let gain = 0,
+    loss = 0,
+    count = 0;
+  for (let i = start; i <= end; i++) {
+    const d = i === 0 ? 0 : bars[i].c - bars[i - 1].c;
+    if (count === 0) {
+      gain = Math.max(0, d);
+      loss = Math.max(0, -d);
     } else {
-      // Bearish candle: check SL breakdown first
-      if (bar.l <= t.sl) {
-        settle(st, cfg, t, bar, "SL", t.sl);
-        return;
-      }
-      if (bar.h >= t.tp) {
-        settle(st, cfg, t, bar, "TP", t.tp);
-        return;
-      }
+      gain = (gain * (period - 1) + Math.max(0, d)) / period;
+      loss = (loss * (period - 1) + Math.max(0, -d)) / period;
     }
-  } else {
-    // SHORT side
-    if (bar.c <= bar.o) {
-      // Bearish candle: check TP drop first
-      if (bar.l <= t.tp) {
-        settle(st, cfg, t, bar, "TP", t.tp);
-        return;
-      }
-      if (bar.h >= t.sl) {
-        settle(st, cfg, t, bar, "SL", t.sl);
-        return;
-      }
-    } else {
-      // Bullish candle: check SL rally first
-      if (bar.h >= t.sl) {
-        settle(st, cfg, t, bar, "SL", t.sl);
-        return;
-      }
-      if (bar.l <= t.tp) {
-        settle(st, cfg, t, bar, "TP", t.tp);
-        return;
-      }
+    count++;
+  }
+  return loss === 0 ? (gain === 0 ? 50 : 100) : 100 - 100 / (1 + gain / loss);
+}
+
+function hourlyBars(bars: Bar[], currentTime: number, timeframeMs: number) {
+  const currentHour = Math.floor(currentTime / 3_600_000);
+  const grouped = new Map<number, Bar>();
+  const counts = new Map<number, number>();
+  for (const bar of bars) {
+    const hour = Math.floor(bar.t / 3_600_000);
+    if (hour >= currentHour) continue;
+    counts.set(hour, (counts.get(hour) ?? 0) + 1);
+    const existing = grouped.get(hour);
+    if (!existing) grouped.set(hour, { ...bar });
+    else {
+      existing.h = Math.max(existing.h, bar.h);
+      existing.l = Math.min(existing.l, bar.l);
+      existing.c = bar.c;
+      existing.v += bar.v;
     }
   }
-
-  // 2. Trailing Stop & Auto-Breakeven Automation if trade remains open
-  if (st.open) {
-    const curTrade = st.open;
-    const curPrice = bar.c;
-    // Spread already baked into entry — track raw unrealized P&L
-    const upnl = curTrade.side === "LONG"
-      ? curTrade.oz * (curPrice - curTrade.entry)
-      : curTrade.oz * (curTrade.entry - curPrice);
-    const currentR = upnl / Math.max(1, curTrade.risk);
-
-    // Auto Breakeven: Only move SL to breakeven at a mature profit threshold (default +1.8R) with healthy buffer
-    if (cfg.autoBreakeven && !curTrade.isBreakeven && currentR >= (cfg.beThresholdR || 1.8)) {
-      const buffer = Math.max(0.12 * atr, 0.40);
-      const beSl = curTrade.side === "LONG" ? curTrade.entry + buffer : curTrade.entry - buffer;
-      curTrade.sl = beSl;
-      curTrade.isBreakeven = true;
-      ev(
-        st,
-        bar.t,
-        "SYS",
-        "sys",
-        `⚡ Breakeven locked (+${currentR.toFixed(1)}R) · Stop moved to entry ${fmtP(beSl)}`
-      );
-    }
-
-    // Dynamic ATR Trailing Stop (activates past +2.2R)
-    if (cfg.trailingStop && currentR >= (cfg.trailThresholdR || 2.2)) {
-      const trailDist = (cfg.trailAtrDist || 1.2) * atr;
-      if (curTrade.side === "LONG") {
-        const potentialSl = curPrice - trailDist;
-        if (potentialSl > curTrade.sl) {
-          curTrade.sl = potentialSl;
-          curTrade.trailActive = true;
-          curTrade.trailSl = potentialSl;
-          curTrade.trailStop = potentialSl;
-        }
-      } else {
-        const potentialSl = curPrice + trailDist;
-        if (potentialSl < curTrade.sl) {
-          curTrade.sl = potentialSl;
-          curTrade.trailActive = true;
-          curTrade.trailSl = potentialSl;
-          curTrade.trailStop = potentialSl;
-        }
-      }
-    }
-  }
+  return [...grouped.entries()]
+    .filter(([hour]) => counts.get(hour) === 3_600_000 / timeframeMs)
+    .map(([, bar]) => bar)
+    .sort((a, b) => a.t - b.t);
 }
 
-export function moveToBreakeven(st: EngineState, cfg: EngineConfig): boolean {
-  if (!st.open) return false;
-  const t = st.open;
-  const half = cfg.spread / 2;
-  const atr = st.atr || 1.0;
-  const buffer = Math.max(0.04 * atr, 0.10);
-  const beSl = t.side === "LONG" ? t.entry + half + buffer : t.entry - (half + buffer);
-  t.sl = beSl;
-  t.isBreakeven = true;
-  const bar = st.bars[st.bars.length - 1];
-  const time = bar ? bar.t : Date.now();
-  ev(st, time, "SYS", "sys", `⚡ Stop manually moved to Breakeven (${fmtP(beSl)})`);
-  return true;
+function adjustedPoints(points: number, cfg: EngineConfig) {
+  const isGold = /^XAU/i.test(cfg.activeSymbol);
+  return isGold &&
+    cfg.brokerSpec.digits === 2 &&
+    cfg.safe.autoAdjustTwoDigitGold
+    ? points / 10
+    : points;
 }
 
-export function partialClose(st: EngineState, cfg: EngineConfig, ratio: number = 0.5): boolean {
-  if (!st.open) return false;
-  const t = st.open;
-  const bar = st.bars[st.bars.length - 1];
-  const px = bar ? bar.c : t.entry;
-  const half = cfg.spread / 2;
-  const closedOz = t.oz * ratio;
-  const dir = t.side === "LONG" ? 1 : -1;
-  const partialPnl = dir * closedOz * (px - (dir === 1 ? half : -half) - t.entry);
-
-  t.oz -= closedOz;
-  t.partialClosed = true;
-  t.partialRealized = (t.partialRealized || 0) + partialPnl;
-  t.risk *= (1 - ratio);
-  st.balance += partialPnl;
-
-  const time = bar ? bar.t : Date.now();
-  ev(st, time, "TP", t.side === "LONG" ? "long" : "short",
-    `💰 Scaled out ${(ratio * 100).toFixed(0)}% (+${partialPnl >= 0 ? "$" : "-$"}${Math.abs(partialPnl).toFixed(0)}) · Remaining size: ${t.oz.toFixed(2)} units`);
-  return true;
+function floorVolume(value: number, step: number, digits = 8) {
+  return Number((Math.floor((value + 1e-12) / step) * step).toFixed(digits));
 }
 
-function familyOf(kind: Aoi["kind"]): string {
-  if (kind === "PDH" || kind === "PDL" || kind === "CDH" || kind === "CDL") return "DAY EXTREMES";
-  if (kind === "TT" || kind === "TB") return "TRIPLES";
-  if (kind === "OB_D" || kind === "OB_S") return "ORDER BLOCKS";
-  return "SESSIONS";
+export function calculateRisk(
+  st: EngineState,
+  cfg: EngineConfig,
+): RiskDecision {
+  const spec = cfg.brokerSpec;
+  const positive = [
+    st.equity,
+    spec.point,
+    spec.tickSize,
+    spec.contractSize,
+    spec.volumeMin,
+    spec.volumeMax,
+    spec.volumeStep,
+    spec.marginPerMinLot,
+    spec.lossPerLot100Points,
+  ];
+  if (
+    positive.some((n) => !Number.isFinite(n) || n <= 0) ||
+    Object.values(cfg.safe).some(
+      (n) => typeof n === "number" && !Number.isFinite(n),
+    ) ||
+    cfg.safe.riskPercent < 0.1 ||
+    cfg.safe.riskPercent > 1 ||
+    cfg.safe.maxMarginPercent <= 0 ||
+    cfg.safe.maxMarginPercent > 25 ||
+    !Number.isFinite(spec.freeMargin) ||
+    spec.freeMargin < 0 ||
+    spec.volumeMax < spec.volumeMin
+  )
+    return {
+      ...EMPTY_RISK,
+      reason: "Invalid risk or broker metadata — fail closed",
+    };
+  if (
+    cfg.feedMode === "mt5" &&
+    (spec.source !== "MT5" ||
+      !Number.isFinite(spec.checkedAt) ||
+      Date.now() - spec.checkedAt > 30_000 ||
+      spec.checkedAt > Date.now() + 5000)
+  )
+    return { ...EMPTY_RISK, reason: "Broker profile missing, mock or stale" };
+  const stopInput = adjustedPoints(cfg.safe.stopLossPoints, cfg);
+  const tpInput = adjustedPoints(cfg.safe.takeProfitPoints, cfg);
+  const brokerMin =
+    Math.max(spec.stopsLevel, spec.freezeLevel) + cfg.safe.stopBufferPoints;
+  const stopPoints = Math.max(stopInput, brokerMin);
+  const takeProfitPoints = Math.max(tpInput, brokerMin);
+  const riskBudget = (st.equity * cfg.safe.riskPercent) / 100;
+  const stopDistance = stopPoints * spec.point;
+  const lossPerLot =
+    ((stopDistance + MAX_DEVIATION_POINTS * spec.point) / (100 * spec.point)) *
+      spec.lossPerLot100Points +
+    COMMISSION_PER_LOT;
+  if (!spec.ready || lossPerLot <= 0)
+    return {
+      ...EMPTY_RISK,
+      riskBudget,
+      effectiveStopPoints: stopPoints,
+      effectiveTakeProfitPoints: takeProfitPoints,
+      reason: "Broker contract specification unavailable",
+    };
+  const rawLots = riskBudget / lossPerLot;
+  const marginPerLot = spec.marginPerMinLot / Math.max(spec.volumeMin, 1e-12);
+  const marginLotCap =
+    Math.min(spec.freeMargin, (st.equity * cfg.safe.maxMarginPercent) / 100) /
+    marginPerLot;
+  const lots = floorVolume(
+    Math.min(rawLots, marginLotCap, spec.volumeMax),
+    spec.volumeStep,
+  );
+  const minLotLoss = lossPerLot * spec.volumeMin;
+  if (rawLots < spec.volumeMin || lots < spec.volumeMin)
+    return {
+      allowed: false,
+      reason:
+        rawLots < spec.volumeMin
+          ? `Minimum lot loss ${minLotLoss.toFixed(2)} exceeds risk budget ${riskBudget.toFixed(2)}`
+          : "Free margin or margin cap cannot fund the minimum lot",
+      lots: 0,
+      expectedLoss: minLotLoss,
+      riskBudget,
+      marginRequired: spec.marginPerMinLot,
+      effectiveStopPoints: stopPoints,
+      effectiveTakeProfitPoints: takeProfitPoints,
+    };
+  const expectedLoss = lossPerLot * lots;
+  const marginRequired = marginPerLot * lots;
+  const marginLimited =
+    lots + spec.volumeStep / 2 < Math.min(rawLots, spec.volumeMax);
+  return {
+    allowed: true,
+    reason: marginLimited
+      ? "Risk passed; volume reduced to respect the margin cap"
+      : "Risk, minimum-lot and margin checks passed",
+    lots,
+    expectedLoss,
+    riskBudget,
+    marginRequired,
+    effectiveStopPoints: stopPoints,
+    effectiveTakeProfitPoints: takeProfitPoints,
+  };
 }
 
-function computeVolumeProfile(bars: Bar[], lookback: number = 32): { poc: number; vah: number; val: number; pocTested: boolean } {
-  if (!bars || bars.length < 5) {
-    const p = bars[bars.length - 1]?.c || 2750;
-    return { poc: p, vah: p + 2, val: p - 2, pocTested: false };
-  }
-  const slice = bars.slice(Math.max(0, bars.length - lookback));
-  let minP = 1e9, maxP = -1e9;
-  for (const b of slice) {
-    if (b.l < minP) minP = b.l;
-    if (b.h > maxP) maxP = b.h;
-  }
-  const bucketSize = 0.50; // $0.50 price steps for Gold
-  const numBuckets = Math.max(1, Math.ceil((maxP - minP) / bucketSize));
-  const volProfile = new Float64Array(numBuckets);
-
-  for (const b of slice) {
-    const bucketIdx = Math.min(numBuckets - 1, Math.max(0, Math.floor((b.c - minP) / bucketSize)));
-    const vol = b.v || 500;
-    volProfile[bucketIdx] += vol;
-  }
-
-  let maxVol = -1;
-  let pocIdx = 0;
-  for (let i = 0; i < numBuckets; i++) {
-    if (volProfile[i] > maxVol) {
-      maxVol = volProfile[i];
-      pocIdx = i;
-    }
-  }
-
-  const poc = Number((minP + pocIdx * bucketSize + bucketSize / 2).toFixed(2));
-  const val = Number((minP + Math.max(0, pocIdx - Math.floor(numBuckets * 0.35)) * bucketSize).toFixed(2));
-  const vah = Number((minP + Math.min(numBuckets - 1, pocIdx + Math.floor(numBuckets * 0.35)) * bucketSize).toFixed(2));
-
-  const curPrice = bars[bars.length - 1]?.c || poc;
-  const pocTested = Math.abs(curPrice - poc) <= 0.8;
-
-  return { poc, vah, val, pocTested };
-}
-
-interface TradePlan {
-  entry: number;
-  sl: number;
-  tp: number;
-  oz: number;
-  risk: number;
-  slDist: number;
-}
-
-/** size a trade against current bar and risk model (fixedUSD, percentEquity, fractionalKelly) */
-function planTrade(st: EngineState, cfg: EngineConfig, bar: Bar, side: "LONG" | "SHORT", atr: number): TradePlan | null {
-  const currentSpread = st.effectiveSpread || cfg.spread;
-  const half = currentSpread / 2;
-  const isGold = (cfg.activeSymbol || "").startsWith("XAU");
-  const effAtr = Math.max(atr || 2.5, isGold ? 2.5 : 0.002);
-  const entry = side === "LONG" ? bar.c + half : bar.c - half;
-
-  // Institutional Stop Distance: Give trade proper breathing room (at least 1.0 - 1.5 ATR) so noise doesn't trigger SL
-  const minStopBuffer = isGold ? 3.0 : 0.0025;
-  const buffer = Math.max(1.15 * effAtr, minStopBuffer);
-  const sl = side === "LONG"
-    ? Math.min(bar.l - 0.35 * effAtr, entry - buffer)
-    : Math.max(bar.h + 0.35 * effAtr, entry + buffer);
-  const slDist = Math.abs(entry - sl);
-
-  const minSl = Math.max(minStopBuffer, (cfg.minSlAtr || 1.0) * effAtr);
-  const maxSl = (cfg.maxSlAtr || 3.5) * effAtr;
-  if (slDist < minSl * 0.85 || slDist > maxSl) return null;
-
-  // Anti-Streak Drawdown Protection: Throttle risk after consecutive losses
-  const closedTrades = st.trades.filter((t) => !t.open);
-  let streakMultiplier = 1.0;
-  if (closedTrades.length >= 2) {
-    const last1 = closedTrades[closedTrades.length - 1];
-    const last2 = closedTrades[closedTrades.length - 2];
-    if ((last1.pnl ?? 0) < 0 && (last2.pnl ?? 0) < 0) {
-      streakMultiplier = 0.5; // Halve risk to protect capital during drawdowns
-    }
-  }
-
-  // Dynamic Risk Sizing Calculation with Asymptotic Capital Decay Protection
-  let targetRiskUSD = cfg.riskUSD;
-  if (cfg.sizingMode === "fixedUSD") {
-    // Hard safety cap: fixed risk cannot exceed 2.0% of current balance
-    targetRiskUSD = Math.min(cfg.riskUSD, st.balance * 0.02) * streakMultiplier;
-  } else if (cfg.sizingMode === "percentEquity") {
-    targetRiskUSD = Math.max(2, st.balance * ((cfg.equityRiskPct || 1.5) / 100) * streakMultiplier);
-  } else if (cfg.sizingMode === "fractionalKelly") {
-    const wins = closedTrades.filter((t) => (t.pnl ?? 0) > 0).length;
-    const p = closedTrades.length >= 8 ? wins / closedTrades.length : 0.48;
-    const b = Math.max(1.0, cfg.rr);
-    const rawKelly = p - (1 - p) / b;
-    const kellyPct = Math.max(0.005, Math.min(0.03, rawKelly * (cfg.kellyFraction || 0.35)));
-    targetRiskUSD = Math.max(2, st.balance * kellyPct * streakMultiplier);
-  }
-
-  // Sizing = targetRisk ÷ (stop distance × point value per unit) with margin safety cap
-  const marginCapUnits = (st.balance * 20) / Math.max(1, bar.c * cfg.pointValue);
-  const rawOz = targetRiskUSD / (slDist * cfg.pointValue);
-  const oz = Math.max(0.01, Math.min(rawOz, marginCapUnits));
-  const risk = oz * slDist * cfg.pointValue;
-
-  // Feature 4: Dynamic Profit Scaling on Super-Trends (1:3.5R expansion)
-  const isSuperTrend =
-    (st.regime === "TRENDING_BULL" || st.regime === "TRENDING_BEAR") &&
-    Math.abs(st.ema50 - st.ema200) >= 1.2 * effAtr;
-  const dynamicRR = isSuperTrend ? Math.max(3.5, cfg.rr * 1.4) : Math.max(2.5, cfg.rr);
-  const tp = side === "LONG" ? entry + slDist * dynamicRR : entry - slDist * dynamicRR;
-  return { entry, sl, tp, oz, risk, slDist };
-}
-
-function openTrade(
+function safetyBlock(
   st: EngineState,
   cfg: EngineConfig,
   bar: Bar,
-  side: "LONG" | "SHORT",
-  a: Aoi,
-  cooldownKey: string,
-  familyOverride?: string
+  risk: RiskDecision,
+  ignorePending = false,
 ) {
-  // CRITICAL GATE: Only 1 position at a time & discipline halt & daily trade cap
-  const maxTrades = cfg.maxDailyTrades ?? 3;
-  if (st.open || st.halted || (st.dailyTradesCount || 0) >= maxTrades) return false;
+  if (st.halted) return st.haltReason ?? "Risk circuit breaker latched";
+  if (cfg.feedMode === "mt5" && st.feedStatus !== "connected")
+    return "Broker feed is not connected";
+  const d = new Date(bar.t);
+  const hour = d.getUTCHours();
+  const weekday = d.getUTCDay();
+  const spreadPct =
+    risk.effectiveStopPoints > 0
+      ? (cfg.brokerSpec.spreadPoints / risk.effectiveStopPoints) * 100
+      : 100;
+  if (weekday === 0 || weekday === 6) return "Weekend lock";
+  if (hour < cfg.safe.sessionStartHour || hour >= cfg.safe.sessionEndHour)
+    return "Outside London/New York window";
+  if (weekday === 5 && hour >= cfg.safe.fridayCutoffHour)
+    return "Friday cutoff";
+  if (cfg.newsLocked)
+    return cfg.newsLabel
+      ? `High-impact news: ${cfg.newsLabel}`
+      : "High-impact news lock";
+  if (cfg.brokerSpec.spreadPoints > cfg.safe.maxSpreadPoints)
+    return `Spread ${cfg.brokerSpec.spreadPoints.toFixed(0)}p exceeds ${cfg.safe.maxSpreadPoints}p`;
+  if (spreadPct > cfg.safe.maxSpreadToStopPercent)
+    return `Spread is ${spreadPct.toFixed(1)}% of stop distance`;
+  if (st.dailyTrades >= cfg.safe.maxDailyTrades)
+    return "Daily two-trade cap reached";
+  if (st.dailyLoss >= (st.dayStartBalance * cfg.safe.dailyLossPercent) / 100)
+    return "Daily loss circuit breaker";
+  if (st.drawdownPercent >= cfg.safe.maxDrawdownPercent)
+    return "Maximum drawdown circuit breaker";
+  if (!risk.allowed) return risk.reason;
+  if (st.open) return "One-trade mode: position already open";
+  if (!ignorePending && st.queue.some((q) => q.status === "PENDING"))
+    return "Signal awaiting review";
+  return "";
+}
 
-  const idx = st.bars.length - 1;
-  const plan = planTrade(st, cfg, bar, side, st.atr);
-  if (!plan) return false;
-  if (st.balance < plan.risk * 0.5) {
-    ev(st, bar.t, "RISK", "risk",
-      `Equity $${st.balance.toFixed(0)} below required risk — standing down to protect capital.`);
-    return false;
+function evaluate(st: EngineState, cfg: EngineConfig, allowEntry: boolean) {
+  // Match the server's bounded 900-bar signal window and indicator seeding.
+  const bars = st.bars.slice(-900);
+  const i = bars.length - 1;
+  const s = cfg.safe;
+  const minimum = Math.max(
+    s.emaSlow + 5,
+    s.breakoutLookback + 5,
+    s.atrPeriod + 5,
+    s.rsiPeriod + 5,
+  );
+  const risk = calculateRisk(st, cfg);
+  if (bars.length < minimum || i < 2) {
+    st.telemetry = {
+      ...EMPTY_TELEMETRY,
+      risk,
+      blockedBy: `Warming indicators ${bars.length}/${minimum}`,
+    };
+    return;
   }
-  const { entry, sl, tp, oz, risk, slDist } = plan;
-  const setup = `${cfg.identity === "reversal" ? "TRAP" : "BREAK"} · ${a.label}`;
-
-  const t: Trade = {
-    id: st.nextId++,
+  const bar = bars[i],
+    previous = bars[i - 1];
+  const fast = ema(bars, s.emaFast, i),
+    slow = ema(bars, s.emaSlow, i),
+    volatility = atr(bars, s.atrPeriod, i),
+    strength = Math.abs(fast - slow),
+    momentum = rsi(bars, s.rsiPeriod, i);
+  const lookback = bars.slice(i - s.breakoutLookback, i);
+  const high = Math.max(...lookback.map((b) => b.h)),
+    low = Math.min(...lookback.map((b) => b.l)),
+    buffer = volatility * s.breakoutBufferAtr;
+  const h1 = hourlyBars(
+      bars,
+      bar.t + TIMEFRAMES.find((tf) => tf.label === cfg.timeframe)!.ms,
+      TIMEFRAMES.find((tf) => tf.label === cfg.timeframe)!.ms,
+    ),
+    h1Ready = !s.useMtf || h1.length >= s.mtfEmaSlow + 2;
+  const h1Fast = h1Ready && s.useMtf ? ema(h1, s.mtfEmaFast) : 0,
+    h1Slow = h1Ready && s.useMtf ? ema(h1, s.mtfEmaSlow) : 0;
+  const bull = [
+    fast > slow,
+    strength >= volatility * s.trendStrengthAtr,
+    bar.c > fast && bar.c > slow,
+    bar.c > high - buffer && previous.c <= high,
+    momentum >= s.rsiBuyMin && momentum <= s.rsiBuyMax,
+    bar.c > previous.c,
+    !s.useMtf || (h1Ready && h1Fast > h1Slow),
+  ];
+  const bear = [
+    fast < slow,
+    strength >= volatility * s.trendStrengthAtr,
+    bar.c < fast && bar.c < slow,
+    bar.c < low + buffer && previous.c >= low,
+    momentum >= s.rsiSellMin && momentum <= s.rsiSellMax,
+    bar.c < previous.c,
+    !s.useMtf || (h1Ready && h1Fast < h1Slow),
+  ];
+  const side: Side | "NONE" = bull.every(Boolean)
+    ? "LONG"
+    : bear.every(Boolean)
+      ? "SHORT"
+      : "NONE";
+  const selected =
+    side === "SHORT"
+      ? bear
+      : side === "LONG"
+        ? bull
+        : fast >= slow
+          ? bull
+          : bear;
+  const labels = [
+    "EMA direction",
+    "ATR trend strength",
+    "Price beyond both EMAs",
+    "Buffered N-bar breakout",
+    "Healthy RSI zone",
+    "Close momentum",
+    "H1 EMA agreement",
+  ];
+  const keys: GateResult["key"][] = [
+    "EMA_DIRECTION",
+    "TREND_STRENGTH",
+    "PRICE_POSITION",
+    "BREAKOUT",
+    "RSI_ZONE",
+    "MOMENTUM",
+    "H1_AGREEMENT",
+  ];
+  const details = [
+    `${fast.toFixed(2)} / ${slow.toFixed(2)}`,
+    `${strength.toFixed(2)} / ${(volatility * s.trendStrengthAtr).toFixed(2)}`,
+    `Close ${bar.c.toFixed(2)}`,
+    `${low.toFixed(2)} — ${high.toFixed(2)}`,
+    momentum.toFixed(1),
+    `${previous.c.toFixed(2)} → ${bar.c.toFixed(2)}`,
+    s.useMtf
+      ? h1Ready
+        ? `${h1Fast.toFixed(2)} / ${h1Slow.toFixed(2)}`
+        : "Warming H1"
+      : "Disabled",
+  ];
+  const gates = keys.map((key, n) => ({
+    key,
+    label: labels[n],
+    passed: selected[n],
+    detail: details[n],
+  }));
+  const blockedBy = safetyBlock(st, cfg, bar, risk);
+  st.telemetry = {
     side,
-    setup,
-    family: familyOverride ?? familyOf(a.kind),
-    identity: cfg.identity,
-    entryIndex: idx,
+    emaFast: fast,
+    emaSlow: slow,
+    atr: volatility,
+    rsi: momentum,
+    breakoutHigh: high,
+    breakoutLow: low,
+    gates,
+    risk,
+    blockedBy: blockedBy || undefined,
+  };
+  if (!allowEntry || side === "NONE" || blockedBy) return;
+  const halfSpread = (cfg.brokerSpec.spreadPoints * cfg.brokerSpec.point) / 2;
+  // MT5 FX/metal chart bars are Bid, whereas synthetic bars are modeled mid-prices.
+  const entry =
+    cfg.feedMode === "mt5"
+      ? side === "LONG"
+        ? bar.c + 2 * halfSpread
+        : bar.c
+      : side === "LONG"
+        ? bar.c + halfSpread
+        : bar.c - halfSpread;
+  const slDistance = risk.effectiveStopPoints * cfg.brokerSpec.point;
+  const tpDistance = risk.effectiveTakeProfitPoints * cfg.brokerSpec.point;
+  const base = {
+    id: st.nextId++,
+    signalId: `${st.sessionId}:${bar.t}:${side}`,
+    source: cfg.feedMode,
+    side,
+    setup: `SAFE SCALPER · ${side} 7-GATE BREAKOUT`,
+    family: "SAFESCALPERPRO" as const,
+    identity: "breakout" as const,
+    entryIndex: i,
     entryTime: bar.t,
     entry,
-    sl,
-    tp,
-    oz,
-    risk,
-    open: true,
+    sl: side === "LONG" ? entry - slDistance : entry + slDistance,
+    tp: side === "LONG" ? entry + tpDistance : entry - tpDistance,
+    oz: risk.lots * cfg.brokerSpec.contractSize,
+    brokerLots: risk.lots,
+    risk: risk.expectedLoss,
+    magicNumber: s.magicNumber,
   };
-  st.open = t;
-  st.trades.push(t);
-  st.dailyTradesCount = (st.dailyTradesCount || 0) + 1;
-  st.cooldown[cooldownKey] = idx;
-
-  ev(st, bar.t, "ENTRY", side === "LONG" ? "long" : "short",
-    `${side} ${oz.toFixed(2)} units @ ${fmtP(entry)} · ${setup}`);
-  ev(st, bar.t, "RISK", "risk",
-    `Risk locked $${risk.toFixed(0)} (${cfg.sizingMode}) · stop ${fmtP(sl)} ($${slDist.toFixed(2)}) · TP ${fmtP(tp)} (${cfg.rr.toFixed(1)}R)`);
-  return true;
+  if (cfg.executionMode === "supervised" || cfg.feedMode === "mt5") {
+    const queued: QueueItem = {
+      ...base,
+      status: "PENDING",
+      expiresAtIndex: i + 3,
+      expiresAtTime:
+        bar.t + 3 * TIMEFRAMES.find((tf) => tf.label === cfg.timeframe)!.ms,
+      dispatchStatus: "IDLE",
+    };
+    st.queue.unshift(queued);
+    addEvent(
+      st,
+      "SIGNAL",
+      side === "LONG" ? "long" : "short",
+      `${side} seven-gate signal held for review · ${risk.lots.toFixed(2)} lots`,
+      bar.t,
+    );
+  } else openTrade(st, { ...base, open: true }, bar.t);
 }
 
-function enqueueSignal(
+function openTrade(st: EngineState, trade: Trade, time: number) {
+  trade.commission = trade.brokerLots * COMMISSION_PER_LOT;
+  st.open = trade;
+  st.dailyTrades++;
+  addEvent(
+    st,
+    "ENTRY",
+    trade.side === "LONG" ? "long" : "short",
+    `${trade.side} opened · ${trade.brokerLots.toFixed(2)} lots @ ${trade.entry.toFixed(2)} · risk $${trade.risk.toFixed(2)}`,
+    time,
+  );
+}
+
+function closeTrade(
+  st: EngineState,
+  trade: Trade,
+  exit: number,
+  outcome: Trade["outcome"],
+  bar: Bar,
+) {
+  const direction = trade.side === "LONG" ? 1 : -1;
+  const pnl =
+    direction * (exit - trade.entry) * trade.oz +
+    (trade.partialRealized ?? 0) -
+    (trade.commission ?? 0);
+  trade.exit = exit;
+  trade.exitIndex = st.bars.length - 1;
+  trade.exitTime = bar.t;
+  trade.pnl = pnl;
+  trade.r = trade.risk > 0 ? pnl / trade.risk : 0;
+  trade.outcome = outcome;
+  trade.open = false;
+  st.balance += pnl - (trade.partialRealized ?? 0);
+  st.equity = st.balance;
+  if (pnl < 0) st.dailyLoss += Math.abs(pnl);
+  st.trades.unshift(trade);
+  st.open = null;
+  addEvent(
+    st,
+    "EXIT",
+    pnl >= 0 ? "long" : "risk",
+    `${outcome} · ${pnl >= 0 ? "+" : ""}$${pnl.toFixed(2)} (${trade.r?.toFixed(2)}R)`,
+    bar.t,
+  );
+}
+
+function manageOpen(st: EngineState, cfg: EngineConfig, bar: Bar) {
+  const t = st.open;
+  if (!t || cfg.feedMode === "mt5") return;
+  const direction = t.side === "LONG" ? 1 : -1;
+  if (
+    (t.side === "LONG" && bar.l <= t.sl) ||
+    (t.side === "SHORT" && bar.h >= t.sl)
+  ) {
+    closeTrade(
+      st,
+      t,
+      t.side === "LONG" ? Math.min(t.sl, bar.o) : Math.max(t.sl, bar.o),
+      "SL",
+      bar,
+    );
+    return;
+  }
+  if (
+    (t.side === "LONG" && bar.h >= t.tp) ||
+    (t.side === "SHORT" && bar.l <= t.tp)
+  ) {
+    closeTrade(st, t, t.tp, "TP", bar);
+    return;
+  }
+  const favorable = direction * ((t.side === "LONG" ? bar.h : bar.l) - t.entry);
+  const point = cfg.brokerSpec.point;
+  if (
+    cfg.safe.useBreakeven &&
+    !t.isBreakeven &&
+    favorable >= adjustedPoints(cfg.safe.breakevenStartPoints, cfg) * point
+  ) {
+    t.sl =
+      t.entry +
+      direction * adjustedPoints(cfg.safe.breakevenOffsetPoints, cfg) * point;
+    t.isBreakeven = true;
+    addEvent(
+      st,
+      "SYSTEM",
+      "sys",
+      `Breakeven armed at ${t.sl.toFixed(cfg.brokerSpec.digits)}`,
+      bar.t,
+    );
+  }
+  if (
+    cfg.safe.usePartialClose &&
+    !t.partialClosed &&
+    favorable >= adjustedPoints(cfg.safe.tp1Points, cfg) * point
+  ) {
+    const ratio = cfg.safe.tp1ClosePercent / 100,
+      closeLots = floorVolume(t.brokerLots * ratio, cfg.brokerSpec.volumeStep);
+    if (
+      closeLots >= cfg.brokerSpec.volumeMin &&
+      t.brokerLots - closeLots >= cfg.brokerSpec.volumeMin
+    ) {
+      const price =
+        t.entry + direction * adjustedPoints(cfg.safe.tp1Points, cfg) * point;
+      t.partialRealized =
+        direction * (price - t.entry) * closeLots * cfg.brokerSpec.contractSize;
+      st.balance += t.partialRealized;
+      t.brokerLots -= closeLots;
+      t.oz = t.brokerLots * cfg.brokerSpec.contractSize;
+      t.partialClosed = true;
+      addEvent(
+        st,
+        "EXIT",
+        "long",
+        `TP1 partial · ${closeLots.toFixed(2)} lots · +$${t.partialRealized.toFixed(2)}`,
+        bar.t,
+      );
+    } else t.partialClosed = true;
+  }
+  if (
+    cfg.safe.useTrailing &&
+    favorable >= adjustedPoints(cfg.safe.trailStartPoints, cfg) * point
+  ) {
+    const candidate =
+      (t.side === "LONG" ? bar.h : bar.l) -
+      direction * adjustedPoints(cfg.safe.trailStepPoints, cfg) * point;
+    if (
+      (t.side === "LONG" && candidate > t.sl) ||
+      (t.side === "SHORT" && candidate < t.sl)
+    ) {
+      t.sl = candidate;
+      t.trailActive = true;
+    }
+  }
+}
+
+function updateCircuitBreakers(st: EngineState, cfg: EngineConfig, bar: Bar) {
+  // Broker account values and risk latch are authoritative in MT5 mode.
+  if (cfg.feedMode === "mt5") return;
+  if (bar.day !== st.dayKey) {
+    st.dayKey = bar.day;
+    st.dayStartBalance = st.balance;
+    st.dailyTrades = 0;
+    st.dailyLoss = 0;
+    if (st.drawdownPercent < cfg.safe.maxDrawdownPercent * 0.7) {
+      st.halted = false;
+      st.haltReason = undefined;
+    }
+  }
+  const mark = st.open
+    ? st.balance +
+      (st.open.side === "LONG" ? 1 : -1) *
+        (bar.c - st.open.entry) *
+        st.open.oz -
+      (st.open.commission ?? 0)
+    : st.balance;
+  st.equity = mark;
+  st.peakEquity = Math.max(st.peakEquity, mark);
+  st.drawdownPercent =
+    st.peakEquity > 0
+      ? Math.max(0, ((st.peakEquity - mark) / st.peakEquity) * 100)
+      : 0;
+  if (st.dailyLoss >= (st.dayStartBalance * cfg.safe.dailyLossPercent) / 100) {
+    st.halted = true;
+    st.haltReason = "Daily loss limit";
+  }
+  if (st.drawdownPercent >= cfg.safe.maxDrawdownPercent) {
+    st.halted = true;
+    st.haltReason = "Maximum drawdown";
+  }
+}
+
+function gaussian(rng: () => number) {
+  return (
+    Math.sqrt(-2 * Math.log(Math.max(rng(), 1e-9))) *
+    Math.cos(2 * Math.PI * rng())
+  );
+}
+function nextSimBar(st: EngineState, cfg: EngineConfig): Bar {
+  const tf = TIMEFRAMES.find((x) => x.label === cfg.timeframe)?.ms ?? 300_000;
+  const previous =
+    st.bars[st.bars.length - 1]?.c ??
+    (/^XAU/.test(cfg.activeSymbol)
+      ? 2650
+      : /^XAG/.test(cfg.activeSymbol)
+        ? 30
+        : 1.08);
+  const hour = new Date(st.nextT).getUTCHours();
+  const liquid = hour >= 7 && hour < 18 ? 1.4 : 0.65;
+  const drift = Math.sin(st.bars.length / 55) * previous * 0.00005;
+  const sigma = previous * 0.00045 * Math.sqrt(tf / 300_000) * liquid;
+  const o = previous,
+    c = Math.max(0.00001, o + drift + gaussian(st.rng) * sigma);
+  const wick = Math.abs(gaussian(st.rng)) * sigma * 0.45;
+  const bar = {
+    t: st.nextT,
+    o,
+    h: Math.max(o, c) + wick,
+    l: Math.min(o, c) - wick,
+    c,
+    v: 20 + st.rng() * 80,
+    day: Math.floor(st.nextT / 86_400_000),
+  };
+  st.nextT += tf;
+  return bar;
+}
+
+export function createEngine(
+  seed = 42,
+  cfg: EngineConfig = DEFAULT_CFG,
+): EngineState {
+  const rng = mulberry32(seed),
+    tf = TIMEFRAMES.find((x) => x.label === cfg.timeframe)?.ms ?? 300_000;
+  const now = Math.floor(Date.now() / tf) * tf,
+    start = now - 720 * tf;
+  const st: EngineState = {
+    sessionId: crypto.randomUUID(),
+    bars: [],
+    balance: cfg.accountBalance,
+    equity: cfg.accountBalance,
+    peakEquity: cfg.accountBalance,
+    dayStartBalance: cfg.accountBalance,
+    dayKey: Math.floor(start / 86_400_000),
+    dailyTrades: 0,
+    dailyLoss: 0,
+    drawdownPercent: 0,
+    halted: false,
+    open: null,
+    trades: [],
+    queue: [],
+    events: [],
+    telemetry: EMPTY_TELEMETRY,
+    feedStatus: "connected",
+    feedLatency: 0,
+    nextId: 1,
+    rng,
+    nextT: start,
+  };
+  for (let i = 0; i < 720; i++) st.bars.push(nextSimBar(st, cfg));
+  st.dayKey = st.bars[st.bars.length - 1].day;
+  st.dayStartBalance = st.balance;
+  evaluate(st, cfg, false);
+  addEvent(
+    st,
+    "SYSTEM",
+    "sys",
+    "SafeScalper-only engine armed · seven gates · small-account guard active",
+  );
+  return st;
+}
+
+export function createLiveEngine(bars: Bar[], cfg: EngineConfig): EngineState {
+  const st = createEngine(11, cfg);
+  st.bars = [...bars].sort((a, b) => a.t - b.t);
+  const latest = st.bars[st.bars.length - 1];
+  st.nextT =
+    (latest?.t ?? Date.now()) +
+    (TIMEFRAMES.find((x) => x.label === cfg.timeframe)?.ms ?? 300_000);
+  st.feedStatus = "connected";
+  st.balance = cfg.brokerSpec.balance || cfg.accountBalance;
+  st.equity = cfg.brokerSpec.equity || st.balance;
+  st.peakEquity = Math.max(st.balance, st.equity);
+  st.dayStartBalance = st.balance;
+  st.dayKey = latest?.day ?? Math.floor(Date.now() / 86_400_000);
+  evaluate(st, cfg, false);
+  return st;
+}
+
+export function processClosedBar(
   st: EngineState,
   cfg: EngineConfig,
   bar: Bar,
-  side: "LONG" | "SHORT",
-  a: Aoi,
-  cooldownKey: string
-): boolean {
-  // CRITICAL GATE: No new signals if position is open or daily limit reached
-  const maxTrades = cfg.maxDailyTrades ?? 3;
-  if (st.open || st.halted || (st.dailyTradesCount || 0) >= maxTrades) return false;
-  if (st.queue.some((q) => q.status === "PENDING")) return false; // one decision at a time
-  const plan = planTrade(st, cfg, bar, side, st.atr);
-  if (!plan) return false;
-  if (st.balance < plan.risk * 0.5) {
-    ev(st, bar.t, "RISK", "risk",
-      `Equity $${st.balance.toFixed(0)} below risk sizing — signal suppressed.`);
-    return false;
-  }
-  const idx = st.bars.length - 1;
-  st.cooldown[cooldownKey] = idx;
-  st.queue.push({
-    id: st.nextId++,
-    time: bar.t,
-    side,
-    setup: `${cfg.identity === "reversal" ? "TRAP" : "BREAK"} · ${a.label}`,
-    family: familyOf(a.kind),
-    entry: plan.entry,
-    sl: plan.sl,
-    tp: plan.tp,
-    oz: plan.oz,
-    risk: plan.risk,
-    aoiKey: cooldownKey,
-    aoiLabel: a.label,
-    entryIndex: idx,
-    status: "PENDING",
-  });
-  if (st.queue.length > 40) st.queue.splice(0, st.queue.length - 40);
-  ev(st, bar.t, "HOLD", "risk",
-    `${side} signal HELD in Action Center · ${a.label} @ ${fmtP(plan.entry)} · approve or reject`);
-  return true;
-}
-
-export function decideQueue(st: EngineState, cfg: EngineConfig, id: number, approve: boolean) {
-  if (typeof id !== "number" || id <= 0 || !Number.isFinite(id)) return;
-  const q = st.queue.find((x) => x.id === id);
-  if (!q || q.status !== "PENDING") return;
-  const idx = st.bars.length - 1;
-  if (idx < 0 || !st.bars[idx]) return;
-
-  const bar = st.bars[idx];
-
-  // Expiration check: signal cannot be approved if older than 6 bars
-  if (idx - q.entryIndex > 6) {
-    q.status = "REJECTED";
-    q.reason = "EXPIRED";
-    ev(st, bar.t, "DECIDE", "sys", `Signal #${id} expired before execution decision.`);
-    return;
-  }
-
-  if (approve) {
-    if (st.open) {
-      ev(st, bar.t, "DECIDE", "sys", `Approval ignored — a position is already open.`);
-      return;
-    }
-    if (st.halted) {
-      ev(st, bar.t, "DECIDE", "sys", `Approval blocked — daily loss limit active. Discipline first.`);
-      return;
-    }
-    if (cfg.windowEnabled) {
-      const { wd, hr } = windowParts(bar.t);
-      if (!cfg.windowGrid[wd]?.[hr]) {
-        ev(st, bar.t, "DECIDE", "sys",
-          `Approval blocked — trading window closed at ${DAY_NAMES[wd]} ${String(hr).padStart(2, "0")}:00 UTC.`);
-        return;
-      }
-    }
-    const synth = { label: q.aoiLabel, kind: "PDH" } as Aoi;
-    const ok = openTrade(st, cfg, bar, q.side, synth, q.aoiKey, q.family);
-    q.status = ok ? "APPROVED" : "REJECTED";
-    if (ok) {
-      ev(st, bar.t, "DECIDE", q.side === "LONG" ? "long" : "short",
-        `APPROVED by trader · ${q.side} dispatched @ ${fmtP(bar.c)} · ${q.setup}`);
-    } else {
-      q.reason = "USER";
-      ev(st, bar.t, "DECIDE", "sys", `Approval failed — stop geometry degenerate at current bar.`);
-    }
-  } else {
-    q.status = "REJECTED";
-    q.reason = "USER";
-    ev(st, bar.t, "DECIDE", "sys",
-      `REJECTED by trader · tracking ${fmtP(q.sl)} / ${fmtP(q.tp)} to score the decision`);
-  }
-}
-
-/** expire stale pending signals and score rejected ones against price action */
-function maintainQueue(st: EngineState, cfg: EngineConfig, bar: Bar) {
-  const idx = st.bars.length - 1;
-  for (const q of st.queue) {
-    if (q.status === "PENDING" && idx - q.entryIndex > 4) {
-      q.status = "REJECTED";
-      q.reason = "EXPIRED";
-      ev(st, bar.t, "DECIDE", "sys", `Signal expired unanswered (4-bar window) — auto-rejected.`);
-    }
-    if (q.status === "REJECTED" && !q.result) {
-      const long = q.side === "LONG";
-      const hitSL = long ? bar.l <= q.sl : bar.h >= q.sl;
-      const hitTP = long ? bar.h >= q.tp : bar.l <= q.tp;
-      if (hitSL) {
-        q.result = "AVOIDED_SL";
-        st.avoidedSlUSD += q.risk;
-        ev(st, bar.t, "DECIDE", "long", `Rejection scored AVOIDED −$${q.risk.toFixed(0)} loss · ${q.setup}`);
-      } else if (hitTP) {
-        q.result = "MISSED_TP";
-        st.missedTpUSD += q.risk * cfg.rr;
-        ev(st, bar.t, "DECIDE", "short", `Rejection cost +$${(q.risk * cfg.rr).toFixed(0)} missed profit · ${q.setup}`);
-      } else if (idx - q.entryIndex > 40) {
-        q.result = "FLAT";
-      }
-    }
-  }
-}
-
-/* ------------------------------------------------------------------ */
-/*  Entry evaluation — the two identities                              */
-/* ------------------------------------------------------------------ */
-function coolKey(a: Aoi) {
-  return a.kind === "CDH" || a.kind === "CDL" ? a.kind : `${a.kind}:${a.ty.toFixed(1)}`;
-}
-
-function clsLabel(c: CandleClass) {
-  switch (c) {
-    case "LPR": return "LPR rejection";
-    case "HPR": return "HPR rejection";
-    case "POWER_BULL": return "bull power candle";
-    case "POWER_BEAR": return "bear power candle";
-    case "BORING": return "boring candle";
-    default: return "neutral candle";
-  }
-}
-
-function evaluate(st: EngineState, cfg: EngineConfig, bar: Bar, cls: CandleClass) {
-  const atr = st.atr;
-  const idx = st.bars.length - 1;
-  const n = st.bars.length;
-  const act = st.aois.filter((a) => a.active);
-  const warm = st.bars.length <= 60;
-
-  // 1. Dynamic Market Regime Detection Engine (8 States)
-  if (n >= 20) {
-    const avgVol = st.bars.slice(n - 20).reduce((acc, b) => acc + (b.v || 1), 0) / 20;
-    const isNews = (bar.v || 1) >= 5.0 * avgVol;
-
-    if (isNews) {
-      st.regime = "NEWS_SPIKE";
-    } else if (n >= 12) {
-      const p10H = Math.max(...st.bars.slice(n - 11, n - 1).map((b) => b.h));
-      const p10L = Math.min(...st.bars.slice(n - 11, n - 1).map((b) => b.l));
-      const body = Math.abs(bar.c - bar.o);
-      const lowerWick = Math.min(bar.o, bar.c) - bar.l;
-      const upperWick = bar.h - Math.max(bar.o, bar.c);
-
-      if ((bar.l < p10L && bar.c > p10L && lowerWick > body * 1.35) || (bar.h > p10H && bar.c < p10H && upperWick > body * 1.35)) {
-        st.regime = "LIQUIDITY_GRAB";
-      } else if (st.ema50 > st.ema200 && bar.c > st.ema50) {
-        st.regime = "STRONG_BULL";
-      } else if (st.ema50 < st.ema200 && bar.c < st.ema50) {
-        st.regime = "STRONG_BEAR";
-      } else if (bar.c > st.ema50) {
-        st.regime = "WEAK_BULL";
-      } else if (bar.c < st.ema50) {
-        st.regime = "WEAK_BEAR";
-      } else {
-        st.regime = "RANGING";
-      }
-    }
-  }
-
-  const setEval = (checks: CheckStep[], verdict: string) => {
-    st.lastEval = { cls, checks, verdict };
-  };
-  const riskIdle = `flat · sizing $${cfg.riskUSD} ÷ stop distance`;
-
-  // Friday Profit-Taking Risk Guard (No new entries after Friday 14:00 UTC)
-  const dt = new Date(bar.t);
-  if (dt.getUTCDay() === 5 && dt.getUTCHours() >= 14) {
-    setEval(
-      [
-        { k: "FRIDAY GUARD", ok: false, v: `${dt.getUTCHours()}:00 UTC (Active)` },
-        { k: "REGIME", ok: true, v: st.regime },
-        { k: "GATE", ok: false, v: "weekend risk lock" },
-        { k: "RISK", ok: null, v: "capital protected" },
-      ],
-      "Friday profit-taking window active (14:00+ UTC). Smart money is closing weekly books — new entries locked to prevent weekend gap whipsaws."
-    );
-    return;
-  }
-
-  // swept levels: price hunted through and closed back inside
-  const swept: { a: Aoi; side: "LONG" | "SHORT"; dist: number }[] = [];
-  let nearest: Aoi | null = null;
-  let nearestD = 1e9;
-  for (const a of act) {
-    if (a.role === "S" && bar.l < a.ty && bar.c > a.ty) swept.push({ a, side: "LONG", dist: a.ty - bar.l });
-    if (a.role === "R" && bar.h > a.ty && bar.c < a.ty) swept.push({ a, side: "SHORT", dist: bar.h - a.ty });
-    const d = Math.min(Math.abs(bar.c - a.ty), Math.abs(bar.h - a.ty), Math.abs(bar.l - a.ty));
-    if (d < nearestD) { nearestD = d; nearest = a; }
-  }
-  const nearAoi = nearest && nearestD < 0.8 * atr ? nearest : null;
-
-  if (warm) {
-    setEval(
-      [
-        { k: "AOI CONTACT", ok: null, v: "seeding levels" },
-        { k: "REACTION", ok: null, v: clsLabel(cls) },
-        { k: "GATE", ok: null, v: "warm-up" },
-        { k: "RISK", ok: null, v: "calibrating ATR" },
-      ],
-      "Warming up — calibrating ATR and arming Areas of Interest."
-    );
-    return;
-  }
-
-  // scheduler gate — entries only inside armed windows (open trades still managed)
-  if (cfg.windowEnabled) {
-    const { wd, hr } = windowParts(bar.t);
-    if (!cfg.windowGrid[wd]?.[hr]) {
-      setEval(
-        [
-          { k: "AOI CONTACT", ok: !!nearAoi, v: nearAoi ? nearAoi.label : "none" },
-          { k: "REACTION", ok: null, v: clsLabel(cls) },
-          { k: "SCHEDULE", ok: false, v: `${DAY_NAMES[wd]} ${String(hr).padStart(2, "0")}:00 UTC` },
-          { k: "GATE", ok: false, v: "window closed" },
-        ],
-        `Trading window closed — ${DAY_NAMES[wd]} ${String(hr).padStart(2, "0")}:00 UTC is not armed. The engine waits; overtrading is the enemy.`
-      );
-      return;
-    }
-  }
-
-  if (st.halted) {
-    setEval(
-      [
-        { k: "AOI CONTACT", ok: !!nearAoi, v: nearAoi ? nearAoi.label : "none" },
-        { k: "REACTION", ok: null, v: clsLabel(cls) },
-        { k: "GATE", ok: false, v: "blocked — daily limit" },
-        { k: "RISK", ok: false, v: "engine halted" },
-      ],
-      `Daily loss limit hit (${st.dailySL}/${cfg.maxDailySL}). The engine stands down until the next session — no FOMO re-entries.`
-    );
-    return;
-  }
-
-  // discipline (spec §6): once a trade hits target OR stop, the bar it exited on is closed
-  // to new entries — no revenge trades after SL, no FOMO re-entries after TP
-  const lastClosed = st.trades.length ? st.trades[st.trades.length - 1] : null;
-  if (lastClosed && !lastClosed.open && lastClosed.exitIndex === idx) {
-    setEval(
-      [
-        { k: "AOI CONTACT", ok: !!nearAoi, v: nearAoi ? nearAoi.label : "none" },
-        { k: "REACTION", ok: null, v: clsLabel(cls) },
-        { k: "GATE", ok: false, v: `exited ${lastClosed.outcome} this bar` },
-        { k: "RISK", ok: false, v: "re-entry locked" },
-      ],
-      lastClosed.outcome === "SL"
-        ? "Stop loss just filled. The engine takes its hands off the keyboard — next setup only, no revenge entries."
-        : "Target just filled. The day's job is done for this setup — the engine waits for the next programmatic signal."
-    );
-    return;
-  }
-
-  if (st.open) {
-    const t = st.open;
-    const halfSpread = cfg.spread / 2;
-    const upnl = t.oz * (t.side === "LONG" ? bar.c - halfSpread - t.entry : t.entry - (bar.c + halfSpread));
-    setEval(
-      [
-        { k: "POSITION", ok: true, v: `${t.side} ${t.oz.toFixed(1)} oz · ${t.setup}` },
-        { k: "REACTION", ok: null, v: clsLabel(cls) },
-        { k: "MANAGEMENT", ok: null, v: `SL ${fmtP(t.sl)} · TP ${fmtP(t.tp)}` },
-        { k: "UNREALIZED", ok: upnl >= 0, v: `${upnl >= 0 ? "+" : "−"}$${Math.abs(upnl).toFixed(0)}` },
-      ],
-      `Managing ${t.side.toLowerCase()} position — no overrides, no adds. The plan exits the trade.`
-    );
-    return;
-  }
-
-  // --- GOLD INSTITUTIONAL PILLAR 1: HIGH-IMPACT NEWS CALENDAR & SPREAD PROTECTION ---
-  const checkUpcomingNews = (timestamp: number) => {
-    const d = new Date(timestamp);
-    const day = d.getUTCDay(); // 1=Mon, 5=Fri
-    const hour = d.getUTCHours();
-    const min = d.getUTCMinutes();
-    const totalMin = hour * 60 + min;
-
-    // Standard high-impact economic release windows (UTC)
-    // 12:30/13:30 UTC: US NFP (first Friday) / US CPI / Retail Sales / Core PCE
-    // 14:00/15:00 UTC: US ISM PMI
-    // 18:00/19:00 UTC: FOMC Rate Decision & Powell Speech (Wednesdays)
-    let eventName = "";
-    let eventMin = -1;
-
-    if ((hour === 12 || hour === 13) && min >= 15 && min <= 45) {
-      eventName = day === 5 ? "US Non-Farm Payrolls (NFP)" : "US CPI / Inflation Release";
-      eventMin = hour * 60 + 30;
-    } else if (hour === 14 && min >= 45 && min <= 60) {
-      eventName = "US ISM Manufacturing / Services PMI";
-      eventMin = 15 * 60;
-    } else if (day === 3 && (hour === 18 || hour === 19) && min <= 45) {
-      eventName = "FOMC Rate Decision / Powell Press Conf";
-      eventMin = 18 * 60 + 30;
-    }
-
-    if (eventName && eventMin > 0) {
-      const diff = Math.abs(totalMin - eventMin);
-      const isCooldown = diff <= 15;
-      return {
-        event: eventName,
-        timeUTC: `${Math.floor(eventMin / 60)}:${String(eventMin % 60).padStart(2, "0")} UTC`,
-        impact: "HIGH" as const,
-        minutesUntil: totalMin < eventMin ? eventMin - totalMin : 0,
-        isCooldownActive: isCooldown,
-        spreadMultiplier: isCooldown ? 3.5 : 1.0, // Dynamic spread expansion to $1.20 during news
-      };
-    }
-    return null;
-  };
-
-  // Gate 0A: Daily Trade Count Limit (Max 2-3 trades per day to prevent overtrading)
-  const maxTrades = cfg.maxDailyTrades ?? 3;
-  if ((st.dailyTradesCount || 0) >= maxTrades) {
-    setEval(
-      [
-        { k: "DAILY TRADE CAP", ok: false, v: `${st.dailyTradesCount}/${maxTrades} Max Reached` },
-        { k: "STATUS", ok: false, v: "DAILY TARGET MET · STANDING DOWN" },
-      ],
-      `Daily trade cap of ${maxTrades} trades reached. Preserving capital and standing down until next session day.`
-    );
-    return;
-  }
-
-  // Gate 0B: Killzone Session Gate (London 07:00–12:00 & NY 12:00–17:00 UTC only)
-  if (cfg.killzoneFilter && (st.activeKillzone === "OFF_SESSION" || hourOf(bar.t) < 7 || hourOf(bar.t) >= 17)) {
-    setEval(
-      [
-        { k: "SESSION STATUS", ok: false, v: `OFF-SESSION (${String(hourOf(bar.t)).padStart(2, "0")}:00 UTC)` },
-        { k: "KILLZONE GATE", ok: false, v: "NO ENTRIES OUTSIDE LONDON/NY" },
-      ],
-      "Off-session dead zone (17:00–07:00 UTC). Smart money is absent — strictly no entries outside London and NY killzones."
-    );
-    return;
-  }
-
-  // Gate 0C: Discipline lock & active position management check
-  if (st.halted) {
-    setEval(
-      [
-        { k: "DISCIPLINE LOCK", ok: false, v: `${st.dailySL}/${cfg.maxDailySL} Daily SL` },
-        { k: "STATUS", ok: false, v: "HALTED FOR SESSION" },
-      ],
-      `Daily Stop Loss limit (${st.dailySL}/${cfg.maxDailySL}) reached. Trading halted to preserve capital.`
-    );
-    return;
-  }
-
-  if (st.open) {
-    const t = st.open as Trade;
-    const currentSpread = st.effectiveSpread || cfg.spread;
-    const half = currentSpread / 2;
-    const curPnl = t.side === "LONG"
-      ? t.oz * (bar.c - half - t.entry)
-      : t.oz * (t.entry - (bar.c + half));
-    setEval(
-      [
-        { k: "ACTIVE POSITION", ok: true, v: `${t.side} ${t.oz.toFixed(2)} units` },
-        { k: "ENTRY", ok: true, v: fmtP(t.entry) },
-        { k: "CURRENT P&L", ok: curPnl >= 0, v: fmtUSD(curPnl, true, 2) },
-        { k: "TP / SL", ok: true, v: `${fmtP(t.tp)} / ${fmtP(t.sl)}` },
-      ],
-      `Position active: ${t.side} @ ${fmtP(t.entry)} · P&L ${fmtUSD(curPnl, true, 2)}. Managing trade toward 1:${cfg.rr.toFixed(1)}R target.`
-    );
-    return;
-  }
-
-  // Feature 2: High-Impact News Calendar with Dynamic Spread Expansion
-  const newsEvent = checkUpcomingNews(bar.t);
-  st.upcomingNews = newsEvent;
-  st.effectiveSpread = cfg.spread * (newsEvent?.spreadMultiplier || 1.0);
-
-  if (newsEvent && newsEvent.isCooldownActive) {
-    st.regime = "NEWS_SPIKE";
-    setEval(
-      [
-        { k: "NEWS CALENDAR", ok: false, v: `${newsEvent.event}` },
-        { k: "SPREAD PROTECTION", ok: false, v: `EXPANDED ($${st.effectiveSpread.toFixed(2)})` },
-        { k: "COOLDOWN", ok: false, v: "±15m ACTIVE" },
-        { k: "GATE", ok: false, v: "HALTED FOR NEWS" },
-      ],
-      `High-Impact news event (${newsEvent.event}) active. Dynamic spread expanded to $${st.effectiveSpread.toFixed(2)}. Execution locked to prevent slippage & stop-hunts.`
-    );
-    return;
-  }
-
-  // Feature 1: Real-Time Volume Profile POC (Point of Control) & CVD
-  const vp = computeVolumeProfile(st.bars, 32);
-  st.volumeProfile = vp;
-
-  // --- GOLD INSTITUTIONAL PILLAR 2: ASIAN RANGE BREAKOUT FAKEOUT STRATEGY ---
-  const barHour = dt.getUTCHours();
-  const barDay = dt.getUTCDate();
-
-  // 1. Build Asian Range during 00:00 - 07:00 UTC
-  if (barHour >= 0 && barHour < 7) {
-    if (st.asianTradedDay !== barDay) {
-      st.asianTradedDay = barDay;
-      st.asianHigh = bar.h;
-      st.asianLow = bar.l;
-    } else {
-      if (st.asianHigh != null) st.asianHigh = Math.max(st.asianHigh, bar.h);
-      if (st.asianLow != null) st.asianLow = Math.min(st.asianLow, bar.l);
-    }
-  }
-
-  // 2. Trigger Asian Fakeout during London Session (07:00 - 12:00 UTC)
-  if (
-    cfg.enabledStrategies.asian_fakeout &&
-    barHour >= 7 &&
-    barHour < 12 &&
-    st.asianHigh != null &&
-    st.asianLow != null &&
-    st.asianTradedDay === barDay
-  ) {
-    const aRange = st.asianHigh - st.asianLow;
-    if (aRange >= 0.5 * atr) {
-      // Bullish Asian Fakeout: Price broke Asian Low but swept and closed back above Asian Low with LPR hammer pin bar
-      if (bar.l < st.asianLow && bar.c > st.asianLow && cls === "LPR") {
-        const fakeoutAoi: Aoi = {
-          kind: "LON_L",
-          role: "S",
-          y1: st.asianLow,
-          y2: st.asianLow,
-          ty: st.asianLow,
-          from: idx,
-          label: "ASIAN LOW FAKEOUT",
-          active: true,
-        };
-
-        const entered = cfg.actionCenter
-          ? enqueueSignal(st, cfg, bar, "LONG", fakeoutAoi, `ASIAN_FAKEOUT_LONG_${barDay}`)
-          : openTrade(st, cfg, bar, "LONG", fakeoutAoi, `ASIAN_FAKEOUT_LONG_${barDay}`);
-
-        if (entered) {
-          st.asianTradedDay = -1; // Only 1 Asian fakeout trade per day
-          const t = st.open as Trade | null;
-          if (t) {
-            // Keep planTrade's institutional 1.0-1.5 ATR stop — only override TP to target opposite Asian boundary
-            t.tp = Math.max(st.asianHigh, t.entry + cfg.rr * Math.abs(t.entry - t.sl));
-          }
-          setEval(
-            [
-              { k: "ASIAN FAKEOUT", ok: true, v: `Asian Low Swept & Reclaimed` },
-              { k: "REACTION", ok: true, v: "LPR Bullish Hammer" },
-              { k: "TARGET", ok: true, v: `Asian High ${fmtP(st.asianHigh)}` },
-              { k: "EXECUTION", ok: true, v: `LONG @ ${fmtP(bar.c)}` },
-            ],
-            `Institutional Asian Range Fakeout triggered LONG! London swept Asian Low (${fmtP(st.asianLow)}) and snapped back inside with clean LPR rejection. Target: Asian High (${fmtP(st.asianHigh)}).`
-          );
-          return;
-        }
-      }
-
-      // Bearish Asian Fakeout: Price broke Asian High but swept and closed back below Asian High with HPR shooting star
-      if (bar.h > st.asianHigh && bar.c < st.asianHigh && cls === "HPR") {
-        const fakeoutAoi: Aoi = {
-          kind: "LON_H",
-          role: "R",
-          y1: st.asianHigh,
-          y2: st.asianHigh,
-          ty: st.asianHigh,
-          from: idx,
-          label: "ASIAN HIGH FAKEOUT",
-          active: true,
-        };
-
-        const entered = cfg.actionCenter
-          ? enqueueSignal(st, cfg, bar, "SHORT", fakeoutAoi, `ASIAN_FAKEOUT_SHORT_${barDay}`)
-          : openTrade(st, cfg, bar, "SHORT", fakeoutAoi, `ASIAN_FAKEOUT_SHORT_${barDay}`);
-
-        if (entered) {
-          st.asianTradedDay = -1;
-          const t = st.open as Trade | null;
-          if (t) {
-            // Keep planTrade's institutional 1.0-1.5 ATR stop — only override TP to target opposite Asian boundary
-            t.tp = Math.min(st.asianLow, t.entry - cfg.rr * Math.abs(t.entry - t.sl));
-          }
-          setEval(
-            [
-              { k: "ASIAN FAKEOUT", ok: true, v: `Asian High Swept & Reclaimed` },
-              { k: "REACTION", ok: true, v: "HPR Bearish Shooting Star" },
-              { k: "TARGET", ok: true, v: `Asian Low ${fmtP(st.asianLow)}` },
-              { k: "EXECUTION", ok: true, v: `SHORT @ ${fmtP(bar.c)}` },
-            ],
-            `Institutional Asian Range Fakeout triggered SHORT! London swept Asian High (${fmtP(st.asianHigh)}) and rejected back inside with clean HPR rejection. Target: Asian Low (${fmtP(st.asianLow)}).`
-          );
-          return;
-        }
-      }
-    }
-  }
-
-  // --- GOLD INSTITUTIONAL PILLAR 3: DXY CORRELATION & MTC ALIGNMENT ---
-  // Macro 4H Trend alignment (16 bars of 15m = 4 hours)
-  const h4EmaFast = st.ema50;
-  const h4EmaSlow = st.ema200;
-  const h4Trend: "BULLISH" | "BEARISH" = h4EmaFast >= h4EmaSlow ? "BULLISH" : "BEARISH";
-
-  // Simulated inverse DXY trend (Dollar Index inversely tracks Gold trend)
-  st.dxyTrend = h4Trend === "BULLISH" ? "BEARISH" : "BULLISH";
-  st.dxyValue = Number((104.25 + (h4Trend === "BEARISH" ? 0.85 : -0.75)).toFixed(2));
-
-  // Multi-Timeframe Alignment Scorer (Strict Institutional Confluence Scoring)
-  const m15State = nearAoi ? "AOI_TEST" : "CHOP";
-  const m5State = cls === "LPR" ? "LPR" : cls === "HPR" ? "HPR" : "NEUTRAL";
-  let mtcScore = 0;
-  if (st.activeKillzone === "LONDON" || st.activeKillzone === "NEW_YORK" || st.activeKillzone === "OVERLAP") mtcScore += 30;
-  if (nearAoi) mtcScore += 30;
-  if (cls === "LPR" || cls === "HPR") mtcScore += 25;
-  if ((h4Trend === "BULLISH" && cls === "LPR") || (h4Trend === "BEARISH" && cls === "HPR")) mtcScore += 15;
-
-  st.mtcAlignment = {
-    h4: h4Trend,
-    m15: m15State,
-    m5: m5State,
-    aligned: (h4Trend === "BULLISH" && cls === "LPR") || (h4Trend === "BEARISH" && cls === "HPR"),
-    score: mtcScore,
-  };
-
-  // --- CHRIS CREAMER 4-PILLAR FREE INSTITUTIONAL FRAMEWORK ---
-  // 1. Environment: Synthetic GEX & Value Regime
-  const ivProxy = Number(((atr / Math.max(1, bar.c)) * 100 * Math.sqrt(252)).toFixed(1));
-  const pcrDiff = (st.ema50 - bar.c) / Math.max(1, atr);
-  const syntheticPcr = Number(Math.max(0.4, Math.min(2.2, 1.0 + pcrDiff * 0.35)).toFixed(2));
-  const gexState: "POSITIVE_GAMMA" | "NEGATIVE_GAMMA" | "NEUTRAL_GAMMA" =
-    syntheticPcr >= 1.15 && ivProxy < 25
-      ? "POSITIVE_GAMMA"
-      : syntheticPcr <= 0.85 || ivProxy >= 32
-      ? "NEGATIVE_GAMMA"
-      : "NEUTRAL_GAMMA";
-
-  const pdhRef = st.pdh || st.dayHigh;
-  const pdlRef = st.pdl || st.dayLow;
-  const valueRegime: "VALUE_UP_EXPANSION" | "VALUE_DOWN_EXPANSION" | "VALUE_RANGE_BOUND" =
-    bar.c > pdhRef
-      ? "VALUE_UP_EXPANSION"
-      : bar.c < pdlRef
-      ? "VALUE_DOWN_EXPANSION"
-      : "VALUE_RANGE_BOUND";
-
-  // 2. Location: Institutional OTE Fibonacci (70.5% - 78.8% - 88.6%)
-  let swingHigh = bar.h;
-  let swingLow = bar.l;
-  const lookbackFib = Math.min(idx, 36);
-  for (let j = idx - lookbackFib; j <= idx; j++) {
-    if (st.bars[j].h > swingHigh) swingHigh = st.bars[j].h;
-    if (st.bars[j].l < swingLow) swingLow = st.bars[j].l;
-  }
-  const fibRange = Math.max(0.2, swingHigh - swingLow);
-
-  // Bullish OTE (Discount Buy Zone)
-  const fib705_buy = Number((swingHigh - fibRange * 0.705).toFixed(2));
-  const fib788_buy = Number((swingHigh - fibRange * 0.788).toFixed(2));
-  const fib886_buy = Number((swingHigh - fibRange * 0.886).toFixed(2));
-  const inDiscountBuy = bar.c >= fib886_buy && bar.c <= fib705_buy;
-
-  // Bearish OTE (Premium Sell Zone)
-  const fib705_sell = Number((swingLow + fibRange * 0.705).toFixed(2));
-  const fib788_sell = Number((swingLow + fibRange * 0.788).toFixed(2));
-  const fib886_sell = Number((swingLow + fibRange * 0.886).toFixed(2));
-  const inPremiumSell = bar.c <= fib886_sell && bar.c >= fib705_sell;
-
-  const inOteZone = inDiscountBuy || inPremiumSell;
-  const oteZoneType: "DISCOUNT_BUY" | "PREMIUM_SELL" | "NONE" = inDiscountBuy
-    ? "DISCOUNT_BUY"
-    : inPremiumSell
-    ? "PREMIUM_SELL"
-    : "NONE";
-
-  // 3. Confirmation: Volume Delta & Passive Absorption
-  const candleRange = Math.max(0.01, bar.h - bar.l);
-  const deltaRatio = (bar.c - bar.o) / candleRange;
-  const barDelta = Math.round((bar.v || 500) * deltaRatio);
-  const prevCvd = st.creamerFramework?.cumulativeDelta || 0;
-  const cumulativeDelta = prevCvd + barDelta;
-
-  let absorption: "PASSIVE_BUYER_ABSORPTION" | "PASSIVE_SELLER_ABSORPTION" | "NONE" = "NONE";
-  let absorptionDesc = "Balanced Order Flow";
-
-  const lowerWick = Math.min(bar.o, bar.c) - bar.l;
-  const upperWick = bar.h - Math.max(bar.o, bar.c);
-
-  if (barDelta < -150 && lowerWick >= 0.45 * candleRange && (cls === "LPR" || bar.c > bar.o)) {
-    absorption = "PASSIVE_BUYER_ABSORPTION";
-    absorptionDesc = `Passive Buyer Absorption detected (Delta ${barDelta} absorbed at ${fmtP(bar.l)})`;
-  } else if (barDelta > 150 && upperWick >= 0.45 * candleRange && (cls === "HPR" || bar.c < bar.o)) {
-    absorption = "PASSIVE_SELLER_ABSORPTION";
-    absorptionDesc = `Passive Seller Absorption detected (Delta +${barDelta} absorbed at ${fmtP(bar.h)})`;
-  }
-
-  // 4. Creamer Confluence Score (0 - 100)
-  let creamerScore = 0;
-  if (gexState === "POSITIVE_GAMMA" && (inDiscountBuy || inPremiumSell)) creamerScore += 30;
-  else if (gexState === "NEGATIVE_GAMMA" && valueRegime !== "VALUE_RANGE_BOUND") creamerScore += 30;
-  else creamerScore += 15;
-
-  if (inOteZone) creamerScore += 30;
-  else creamerScore += 10;
-
-  if (absorption !== "NONE") creamerScore += 25;
-  else if (cls === "LPR" || cls === "HPR") creamerScore += 15;
-
-  if (st.activeKillzone === "LONDON" || st.activeKillzone === "NEW_YORK") creamerScore += 15;
-
-  st.creamerFramework = {
-    gexState,
-    pcrRatio: syntheticPcr,
-    impliedVolProxy: ivProxy,
-    valueRegime,
-    swingHigh,
-    swingLow,
-    fib705: oteZoneType === "DISCOUNT_BUY" ? fib705_buy : fib705_sell,
-    fib788: oteZoneType === "DISCOUNT_BUY" ? fib788_buy : fib788_sell,
-    fib886: oteZoneType === "DISCOUNT_BUY" ? fib886_buy : fib886_sell,
-    inOteZone,
-    oteZoneType,
-    barDelta,
-    cumulativeDelta,
-    absorption,
-    absorptionDesc,
-    totalConfluenceScore: Math.min(100, creamerScore),
-    isSetupReady: inOteZone && absorption !== "NONE" && creamerScore >= 70,
-  };
-
-  // --- CHRIS CREAMER 4-LAYER INSTITUTIONAL EXECUTION TRIGGER ---
-  if (cfg.enabledStrategies.creamer_4layer && st.creamerFramework.isSetupReady && !st.open) {
-    const cfCd = st.cooldown["CREAMER_4LAYER"];
-    const canCf = cfCd == null || idx - cfCd >= 16;
-    if (canCf) {
-      const cfSide = st.creamerFramework.oteZoneType === "DISCOUNT_BUY" ? "LONG" : "SHORT";
-      const cfAoi: Aoi = {
-        kind: cfSide === "LONG" ? "TB" : "TT",
-        role: cfSide === "LONG" ? "S" : "R",
-        y1: bar.c,
-        y2: bar.c,
-        ty: bar.c,
-        from: idx,
-        label: `4-LAYER OTE (${st.creamerFramework.oteZoneType.replace("_", " ")})`,
-        active: true,
-      };
-
-      const entered = cfg.actionCenter
-        ? enqueueSignal(st, cfg, bar, cfSide, cfAoi, "CREAMER_4LAYER")
-        : openTrade(st, cfg, bar, cfSide, cfAoi, "CREAMER_4LAYER");
-
-      if (entered) {
-        setEval(
-          [
-            { k: "ENVIRONMENT", ok: true, v: `GEX ${st.creamerFramework.gexState.replace("_GAMMA", "")}` },
-            { k: "LOCATION", ok: true, v: `OTE ${st.creamerFramework.fib788}` },
-            { k: "CONFIRMATION", ok: true, v: st.creamerFramework.absorption.replace(/_/g, " ") },
-            { k: "EXECUTION", ok: true, v: `${cfSide} @ ${fmtP(bar.c)} (1:2.5R)` },
-          ],
-          `🎯 Chris Creamer 4-Layer Institutional Execution Triggered! All 4 Gates (Environment, Location OTE, Absorption, Risk) Confirmed.`
-        );
-        return;
-      }
-    }
-  }
-
-  // --- RANGE BREAKOUT EA LOGIC ---
-  if (cfg.rbEnabled && (st.rbState === "ACTIVE" || st.rbState === "FORMING") && st.rbHigh != null && st.rbLow != null) {
-    const isGold = (cfg.activeSymbol || "").startsWith("XAU");
-    const pointScale = isGold ? 0.01 : 0.0001;
-    const buffer = (cfg.rbBufferPoints ?? 20) * pointScale;
-    const longTrigger = st.rbHigh + buffer;
-    const shortTrigger = st.rbLow - buffer;
-
-    if (st.rbState === "ACTIVE") {
-      let rbSide: "LONG" | "SHORT" | null = null;
-      let rbEntry = 0;
-
-      if (bar.c > longTrigger || bar.h > longTrigger) {
-        rbSide = "LONG";
-        rbEntry = Math.max(bar.o, longTrigger);
-      } else if (bar.c < shortTrigger || bar.l < shortTrigger) {
-        rbSide = "SHORT";
-        rbEntry = Math.min(bar.o, shortTrigger);
-      }
-
-      if (rbSide) {
-        const aoi: Aoi = {
-          kind: "PDH",
-          role: rbSide === "LONG" ? "R" : "S",
-          y1: rbEntry,
-          y2: rbEntry,
-          ty: rbEntry,
-          from: idx,
-          label: `RANGE BREAKOUT (${rbSide === "LONG" ? "HIGH" : "LOW"})`,
-          active: true,
-        };
-
-        const entered = cfg.actionCenter
-          ? enqueueSignal(st, cfg, bar, rbSide, aoi, `RB_${rbSide}_${st.dayKey}`)
-          : openTrade(st, cfg, bar, rbSide, aoi, `RB_${rbSide}_${st.dayKey}`);
-
-        if (entered) {
-          st.rbState = "DONE";
-          const t = st.open as Trade | null;
-          if (t) {
-            const rangeSl = rbSide === "LONG" ? st.rbLow : st.rbHigh;
-            const dist = Math.min(Math.max(Math.abs(t.entry - rangeSl), 0.5 * st.atr), 2.5 * st.atr);
-            t.sl = rbSide === "LONG" ? t.entry - dist : t.entry + dist;
-            t.tp = rbSide === "LONG" ? t.entry + dist * cfg.rr : t.entry - dist * cfg.rr;
-          }
-
-          setEval(
-            [
-              { k: "EA TRIGGER", ok: true, v: `Range Breakout ${rbSide}` },
-              { k: "RANGE BOUNDS", ok: true, v: `H ${fmtP(st.rbHigh)} / L ${fmtP(st.rbLow)}` },
-              { k: "EXECUTION", ok: true, v: `${rbSide} @ ${fmtP(rbEntry)}` },
-            ],
-            `BM Range Breakout EA triggered ${rbSide} trade as price cleared ${fmtP(rbSide === "LONG" ? longTrigger : shortTrigger)}.`
-          );
-          return;
-        }
-      }
-    }
-  }
-  // --- END RANGE BREAKOUT ---
-  if (cfg.identity === "reversal") {
-    /* ------- INSTITUTIONAL FILTER LAYER ------- */
-
-    // Filter 1: Killzone Session Gate
-    if (cfg.killzoneFilter && st.activeKillzone === "OFF_SESSION") {
-      setEval(
-        [
-          { k: "AOI CONTACT", ok: !!nearAoi, v: nearAoi ? nearAoi.label : "none" },
-          { k: "KILLZONE", ok: false, v: `OFF-SESSION (${String(hourOf(bar.t)).padStart(2, "0")}:00 UTC)` },
-          { k: "GATE", ok: false, v: "dead zone — no entries" },
-          { k: "RISK", ok: null, v: "engine resting" },
-        ],
-        "Off-session dead zone (21:00–07:00 UTC). Smart money is absent — no entries until London or NY killzone opens."
-      );
-      return;
-    }
-
-    /* ------- RIGHT-SIDE · TRAP / REVERSAL ------- */
-    const valid = swept.filter((s) => {
-      const cd = st.cooldown[coolKey(s.a)];
-      if (cd != null && idx - cd < 10) return false;
-      // Filter 3: Eliminate weak dynamic session pools (CDH/CDL/OVL) — keep only major static liquidity pools (PDH, PDL, LON, NY, Triples)
-      if (s.a.kind === "CDH" || s.a.kind === "CDL" || s.a.kind === "OVL_H" || s.a.kind === "OVL_L") return false;
-      // Filter 4: OB requires FVG displacement — check for 3-bar FVG nearby
-      if (s.a.kind === "OB_D" || s.a.kind === "OB_S") {
-        let hasFvg = false;
-        for (let j = Math.max(0, idx - 6); j < idx - 1; j++) {
-          const b1 = st.bars[j], b3 = st.bars[j + 2];
-          if (!b1 || !b3) continue;
-          // bullish FVG: bar3.low > bar1.high (gap up)
-          if (s.a.kind === "OB_D" && b3.l > b1.h && (b3.l - b1.h) >= 0.3 * atr) { hasFvg = true; break; }
-          // bearish FVG: bar3.high < bar1.low (gap down)
-          if (s.a.kind === "OB_S" && b3.h < b1.l && (b1.l - b3.h) >= 0.3 * atr) { hasFvg = true; break; }
-        }
-        if (!hasFvg) return false; // reject naked OB without FVG displacement
-      }
-      return true;
-    });
-    const longs = valid.filter((s) => s.side === "LONG");
-    const shorts = valid.filter((s) => s.side === "SHORT");
-
-    let entered = false;
-    let chosen: typeof swept[number] | null = null;
-
-    // Pre-compute confluence score for the best candidate
-    const scoreCandidate = (s: typeof swept[number], side: "LONG" | "SHORT"): number => {
-      let score = 0;
-      // 30 pts: Major liquidity pool (PDH, PDL, session extremes, triple top/bottom)
-      const majorKinds = ["PDH", "PDL", "LON_H", "LON_L", "NY_H", "NY_L", "TT", "TB"];
-      if (majorKinds.includes(s.a.kind)) score += 30;
-      else score += 10; // minor pool (FVG OB with displacement gets partial credit)
-
-      // 25 pts: Rejection morphology (already confirmed by cls === LPR/HPR)
-      const clsMatch = (side === "LONG" && cls === "LPR") || (side === "SHORT" && cls === "HPR");
-      if (clsMatch) score += 25;
-
-      // 25 pts: Trend alignment (50/200 EMA)
-      const bullTrend = st.ema50 > st.ema200;
-      const bearTrend = st.ema50 < st.ema200;
-      if ((side === "LONG" && bullTrend) || (side === "SHORT" && bearTrend)) score += 25;
-      else if (!cfg.trendFilter) score += 15; // partial credit if filter disabled
-
-      // 20 pts: Killzone timing
-      if (st.activeKillzone === "LONDON" || st.activeKillzone === "NEW_YORK" || st.activeKillzone === "OVERLAP") score += 20;
-      else if (!cfg.killzoneFilter) score += 10;
-
-      // Feature 1: Volume Profile POC / Value Area Confluence (+15 pts)
-      if (st.volumeProfile) {
-        if (side === "LONG" && (bar.c <= st.volumeProfile.val + 0.6 * atr || st.volumeProfile.pocTested)) score += 15;
-        else if (side === "SHORT" && (bar.c >= st.volumeProfile.vah - 0.6 * atr || st.volumeProfile.pocTested)) score += 15;
-      }
-
-      return Math.min(100, score);
-    };
-
-    const tryEnter = (side: "LONG" | "SHORT", a: Aoi, key: string) =>
-      cfg.actionCenter ? enqueueSignal(st, cfg, bar, side, a, key) : openTrade(st, cfg, bar, side, a, key);
-
-    if (longs.length && cls === "LPR") {
-      chosen = longs.reduce((m, s) => (s.dist > m.dist ? s : m), longs[0]);
-
-      // Filter 2: Trend direction — strictly block counter-trend longs in bear regime
-      const isBearRegime = st.regime === "STRONG_BEAR" || st.regime === "TRENDING_BEAR" || (cfg.trendFilter && st.ema50 < st.ema200);
-      if (isBearRegime) {
-        const score = scoreCandidate(chosen, "LONG");
-        st.lastConfluenceScore = score;
-        setEval(
-          [
-            { k: "AOI CONTACT", ok: true, v: `${chosen.a.label} swept` },
-            { k: "TREND", ok: false, v: "BEARISH REGIME (50 EMA < 200 EMA)" },
-            { k: "CONFLUENCE", ok: false, v: `${score}/100 — LONG blocked` },
-            { k: "GATE", ok: false, v: "counter-trend long blocked" },
-          ],
-          `${chosen.a.label} swept with LPR rejection, but macro regime is bearish. Counter-trend LONG blocked.`
-        );
-        chosen = null;
-      }
-
-      // Filter 5: Confluence score gate
-      if (chosen) {
-        const score = scoreCandidate(chosen, "LONG");
-        st.lastConfluenceScore = score;
-        if (score < cfg.confluenceGate) {
-          setEval(
-            [
-              { k: "AOI CONTACT", ok: true, v: chosen.a.label },
-              { k: "REACTION", ok: true, v: clsLabel(cls) },
-              { k: "CONFLUENCE", ok: false, v: `${score}/100 < ${cfg.confluenceGate} gate` },
-              { k: "GATE", ok: false, v: "low confluence" },
-            ],
-            `Signal at ${chosen.a.label} scored ${score}/100 — below ${cfg.confluenceGate} institutional confluence gate. Discarded.`
-          );
-          chosen = null;
-        }
-      }
-
-      if (chosen) entered = tryEnter("LONG", chosen.a, coolKey(chosen.a));
-    } else if (shorts.length && cls === "HPR") {
-      chosen = shorts.reduce((m, s) => (s.dist > m.dist ? s : m), shorts[0]);
-
-      // Filter 2: Trend direction — strictly block counter-trend shorts in bull regime
-      const isBullRegime = st.regime === "STRONG_BULL" || st.regime === "TRENDING_BULL" || (cfg.trendFilter && st.ema50 > st.ema200);
-      if (isBullRegime) {
-        const score = scoreCandidate(chosen, "SHORT");
-        st.lastConfluenceScore = score;
-        setEval(
-          [
-            { k: "AOI CONTACT", ok: true, v: `${chosen.a.label} swept` },
-            { k: "TREND", ok: false, v: "BULLISH REGIME (50 EMA > 200 EMA)" },
-            { k: "CONFLUENCE", ok: false, v: `${score}/100 — SHORT blocked` },
-            { k: "GATE", ok: false, v: "counter-trend short blocked" },
-          ],
-          `${chosen.a.label} swept with HPR rejection, but macro regime is bullish. Counter-trend SHORT blocked.`
-        );
-        chosen = null;
-      }
-
-      // Filter 5: Confluence score gate
-      if (chosen) {
-        const score = scoreCandidate(chosen, "SHORT");
-        st.lastConfluenceScore = score;
-        if (score < cfg.confluenceGate) {
-          setEval(
-            [
-              { k: "AOI CONTACT", ok: true, v: chosen.a.label },
-              { k: "REACTION", ok: true, v: clsLabel(cls) },
-              { k: "CONFLUENCE", ok: false, v: `${score}/100 < ${cfg.confluenceGate} gate` },
-              { k: "GATE", ok: false, v: "low confluence" },
-            ],
-            `Signal at ${chosen.a.label} scored ${score}/100 — below ${cfg.confluenceGate} institutional confluence gate. Discarded.`
-          );
-          chosen = null;
-        }
-      }
-
-      if (chosen) entered = tryEnter("SHORT", chosen.a, coolKey(chosen.a));
-    }
-
-    if (entered && chosen) {
-      const held = cfg.actionCenter;
-      const q = held ? st.queue[st.queue.length - 1] : null;
-      const ot = st.open as Trade | null;
-      const riskTxt = held && q
-        ? `${q.oz.toFixed(1)} oz · SL $${Math.abs(q.entry - q.sl).toFixed(2)} · held for approval`
-        : ot
-          ? `${ot.oz.toFixed(1)} oz · SL $${Math.abs(ot.entry - ot.sl).toFixed(2)} · TP ${fmtP(ot.tp)}`
-          : "entry withheld";
-      setEval(
-        [
-          { k: "AOI CONTACT", ok: true, v: `${chosen.a.label} swept $${chosen.dist.toFixed(2)}` },
-          { k: "REACTION", ok: true, v: clsLabel(cls) },
-          { k: "TRAP GATE", ok: true, v: `${chosen.side === "LONG" ? "buy low" : "sell high"} confirmed` },
-          { k: "RISK", ok: true, v: riskTxt },
-        ],
-        held
-          ? `Liquidity trap sprung at ${chosen.a.label} — signal HELD in the Action Center. Approve to dispatch, reject to leave the money on the table.`
-          : `Liquidity trap sprung at ${chosen.a.label} — ${chosen.side === "LONG" ? "swept low, rejected, LONG" : "swept high, rejected, SHORT"} on the ${clsLabel(cls)}.`
-      );
-    } else {
-      // --- SECONDARY INSTITUTIONAL STRATEGIES: TREND PULLBACK & RSI EXHAUSTION ---
-      let secondaryEntered = false;
-
-      // 1. Trend EMA Pullback Strategy (Requires strict LPR/HPR rejection & Killzone timing)
-      const isBull = st.ema50 > st.ema200;
-      const isBear = st.ema50 < st.ema200;
-      const emaCd = st.cooldown["EMA_PULLBACK"];
-      const canEma = cfg.enabledStrategies.ema_pullback && (emaCd == null || idx - emaCd >= 18) && (st.activeKillzone === "LONDON" || st.activeKillzone === "NEW_YORK" || st.activeKillzone === "OVERLAP");
-
-      if (canEma && isBull && bar.l <= st.ema50 + 0.3 * atr && bar.c > st.ema50 && cls === "LPR") {
-        const emaAoi: Aoi = {
-          kind: "OB_D",
-          role: "S",
-          y1: st.ema50,
-          y2: st.ema50,
-          ty: st.ema50,
-          from: idx,
-          label: "50-EMA TREND PULLBACK",
-          active: true,
-        };
-        secondaryEntered = tryEnter("LONG", emaAoi, "EMA_PULLBACK");
-        if (secondaryEntered) {
-          setEval(
-            [
-              { k: "STRATEGY", ok: true, v: "50-EMA Trend Pullback" },
-              { k: "TREND", ok: true, v: "BULLISH (EMA50 > EMA200)" },
-              { k: "REACTION", ok: true, v: clsLabel(cls) },
-              { k: "EXECUTION", ok: true, v: `LONG @ ${fmtP(bar.c)}` },
-            ],
-            `Institutional Trend Pullback confirmed! Bullish bounce off 50-EMA support with ${clsLabel(cls)} confirmation. Target: 1:${cfg.rr.toFixed(1)}R expansion.`
-          );
-          return;
-        }
-      } else if (canEma && isBear && bar.h >= st.ema50 - 0.3 * atr && bar.c < st.ema50 && cls === "HPR") {
-        const emaAoi: Aoi = {
-          kind: "OB_S",
-          role: "R",
-          y1: st.ema50,
-          y2: st.ema50,
-          ty: st.ema50,
-          from: idx,
-          label: "50-EMA TREND PULLBACK",
-          active: true,
-        };
-        secondaryEntered = tryEnter("SHORT", emaAoi, "EMA_PULLBACK");
-        if (secondaryEntered) {
-          setEval(
-            [
-              { k: "STRATEGY", ok: true, v: "50-EMA Trend Pullback" },
-              { k: "TREND", ok: true, v: "BEARISH (EMA50 < EMA200)" },
-              { k: "REACTION", ok: true, v: clsLabel(cls) },
-              { k: "EXECUTION", ok: true, v: `SHORT @ ${fmtP(bar.c)}` },
-            ],
-            `Institutional Trend Pullback confirmed! Bearish rejection off 50-EMA resistance with ${clsLabel(cls)} confirmation. Target: 1:${cfg.rr.toFixed(1)}R breakdown.`
-          );
-          return;
-        }
-      }
-
-      // 2. RSI Exhaustion Mean-Reversion Strategy (Requires extreme RSI <= 25 or >= 75 + LPR/HPR Rejection)
-      if (!secondaryEntered && cfg.enabledStrategies.rsi_exhaustion && idx >= 20) {
-        let gains = 0, losses = 0;
-        const rsiPeriod = 14;
-        const startIdx = Math.max(1, idx - rsiPeriod);
-        for (let j = startIdx; j <= idx; j++) {
-          const diff = st.bars[j].c - st.bars[j - 1].c;
-          if (diff >= 0) gains += diff;
-          else losses += Math.abs(diff);
-        }
-        const rs = losses === 0 ? 100 : gains / losses;
-        const curRsi = 100 - 100 / (1 + rs);
-
-        const rsiCd = st.cooldown["RSI_EXHAUSTION"];
-        const canRsi = (rsiCd == null || idx - rsiCd >= 20) && (st.activeKillzone === "LONDON" || st.activeKillzone === "NEW_YORK" || st.activeKillzone === "OVERLAP");
-        if (canRsi && curRsi <= 25 && cls === "LPR") {
-          const rsiAoi: Aoi = {
-            kind: "TB",
-            role: "S",
-            y1: bar.l,
-            y2: bar.l,
-            ty: bar.l,
-            from: idx,
-            label: "RSI OVERSOLD BOUNCE",
-            active: true,
-          };
-          secondaryEntered = tryEnter("LONG", rsiAoi, "RSI_EXHAUSTION");
-          if (secondaryEntered) {
-            setEval(
-              [
-                { k: "STRATEGY", ok: true, v: `RSI Oversold (${curRsi.toFixed(0)})` },
-                { k: "REACTION", ok: true, v: clsLabel(cls) },
-                { k: "EXECUTION", ok: true, v: `LONG @ ${fmtP(bar.c)}` },
-              ],
-              `RSI Exhaustion trigger! Oversold momentum (${curRsi.toFixed(0)}) flashed reversal signal. LONG mean-reversion initiated.`
-            );
-            return;
-          }
-        } else if (canRsi && curRsi >= 75 && cls === "HPR") {
-          const rsiAoi: Aoi = {
-            kind: "TT",
-            role: "R",
-            y1: bar.h,
-            y2: bar.h,
-            ty: bar.h,
-            from: idx,
-            label: "RSI OVERBOUGHT FADE",
-            active: true,
-          };
-          secondaryEntered = tryEnter("SHORT", rsiAoi, "RSI_EXHAUSTION");
-          if (secondaryEntered) {
-            setEval(
-              [
-                { k: "STRATEGY", ok: true, v: `RSI Overbought (${curRsi.toFixed(0)})` },
-                { k: "REACTION", ok: true, v: clsLabel(cls) },
-                { k: "EXECUTION", ok: true, v: `SHORT @ ${fmtP(bar.c)}` },
-              ],
-              `RSI Exhaustion trigger! Overbought momentum (${curRsi.toFixed(0)}) flashed rejection signal. SHORT mean-reversion initiated.`
-            );
-            return;
-          }
-        }
-      }
-
-      const contactTxt = swept.length
-        ? swept.map((s) => s.a.label).join(" + ") + " swept"
-        : nearAoi
-          ? `near ${nearAoi.label} · no sweep`
-          : "scanning liquidity pools";
-      const reactionOk = swept.length ? cls === "LPR" || cls === "HPR" : null;
-      const gateTxt = !swept.length
-        ? "scanning for setup"
-        : cls === "LPR" || cls === "HPR"
-          ? "level on cooldown"
-          : `needs ${swept.some((s) => s.side === "LONG") ? "LPR" : "HPR"}, got ${clsLabel(cls)}`;
-      setEval(
-        [
-          { k: "AOI CONTACT", ok: swept.length > 0, v: contactTxt },
-          { k: "REACTION", ok: reactionOk, v: clsLabel(cls) },
-          { k: "TRAP GATE", ok: false, v: gateTxt },
-          { k: "RISK", ok: null, v: swept.length ? "entry withheld" : riskIdle },
-        ],
-        !swept.length
-          ? nearAoi
-            ? `Drifting near ${nearAoi.label}. No sweep, no rejection — the engine waits and leaves this money on the table.`
-            : "Price is mid-range. Auto-pilot scanning for Asian fakeouts, EMA pullbacks, and liquidity sweeps."
-          : `Swept ${swept.map((s) => s.a.label).join(", ")} but the close printed a ${clsLabel(cls)}. Trap not confirmed — no entry.`
-      );
-    }
-  } else {
-    /* ------- LEFT-SIDE · BREAKOUT / MOMENTUM ------- */
-    const bars = st.bars;
-    let best: { a: Aoi; side: "LONG" | "SHORT" } | null = null;
-    let approach = false, pullback = false, power = false;
-    let nearLabel = "";
-
-    for (const a of act) {
-      const cd = st.cooldown[coolKey(a)];
-      if (cd != null && idx - cd < 10) continue;
-      if (a.role === "R") {
-        let app = false, pb = false;
-        for (let j = Math.max(0, idx - 12); j < idx; j++) {
-          const c = bars[j].c;
-          if (c < a.ty && c > a.ty - 1.6 * atr) app = true;
-        }
-        for (let j = Math.max(0, idx - 4); j < idx; j++) if (bars[j].c < bars[j].o) pb = true;
-        if (app) { approach = true; nearLabel = a.label; if (pb) pullback = true; }
-        if (app && pb && cls === "POWER_BULL" && bar.c > a.ty) { best = { a, side: "LONG" }; break; }
-      } else {
-        let app = false, pb = false;
-        for (let j = Math.max(0, idx - 12); j < idx; j++) {
-          const c = bars[j].c;
-          if (c > a.ty && c < a.ty + 1.6 * atr) app = true;
-        }
-        for (let j = Math.max(0, idx - 4); j < idx; j++) if (bars[j].c > bars[j].o) pb = true;
-        if (app) { approach = true; nearLabel = a.label; if (pb) pullback = true; }
-        if (app && pb && cls === "POWER_BEAR" && bar.c < a.ty) { best = { a, side: "SHORT" }; break; }
-      }
-    }
-    power = cls === "POWER_BULL" || cls === "POWER_BEAR";
-
-    let entered = false;
-    if (best)
-      entered = cfg.actionCenter
-        ? enqueueSignal(st, cfg, bar, best.side, best.a, coolKey(best.a))
-        : openTrade(st, cfg, bar, best.side, best.a, coolKey(best.a));
-
-    if (entered && best) {
-      const held = cfg.actionCenter;
-      const t = st.open as Trade | null;
-      const q = held ? st.queue[st.queue.length - 1] : null;
-      const riskTxt = held && q
-        ? `${q.oz.toFixed(1)} oz · SL $${Math.abs(q.entry - q.sl).toFixed(2)} · held for approval`
-        : t
-          ? `${t.oz.toFixed(1)} oz · SL $${Math.abs(t.entry - t.sl).toFixed(2)} · TP ${fmtP(t.tp)}`
-          : "entry withheld";
-      setEval(
-        [
-          { k: "APPROACH", ok: true, v: `${best.a.label} tested, held` },
-          { k: "PULLBACK", ok: true, v: "compression logged" },
-          { k: "POWER CANDLE", ok: true, v: clsLabel(cls) },
-          { k: "RISK", ok: true, v: riskTxt },
-        ],
-        held
-          ? `${clsLabel(cls)} smashed through ${best.a.label} — breakout signal HELD in the Action Center. Approve to dispatch.`
-          : `${clsLabel(cls)} smashed through ${best.a.label} — ${best.side} on momentum, sized to $${cfg.riskUSD} risk.`
-      );
-    } else {
-      setEval(
-        [
-          { k: "APPROACH", ok: approach, v: approach ? `${nearLabel} under test` : "no level under test" },
-          { k: "PULLBACK", ok: pullback, v: pullback ? "consolidation seen" : "no pullback yet" },
-          { k: "POWER CANDLE", ok: power ? null : false, v: clsLabel(cls) },
-          { k: "RISK", ok: null, v: riskIdle },
-        ],
-        power && approach
-          ? `Power candle away from a clean approach — breakout gate not satisfied. Chasing is not a setup.`
-          : approach
-            ? `Price working ${nearLabel}. Waiting for pullback + power candle to confirm the break.`
-            : "No resistance or support under test. Momentum identity stands down."
-      );
-    }
-  }
-}
-
-/* ------------------------------------------------------------------ */
-/*  One full bar cycle                                                 */
-/* ------------------------------------------------------------------ */
-export function advance(st: EngineState, cfg: EngineConfig) {
-  const tfMap: Record<string, number> = {
-    "1m": 60 * 1000,
-    "5m": 5 * 60 * 1000,
-    "15m": 15 * 60 * 1000,
-    "30m": 30 * 60 * 1000,
-    "1h": 60 * 60 * 1000,
-    "4h": 4 * 60 * 60 * 1000,
-  };
-  const intervalMs = tfMap[cfg.timeframe] || BAR_MS;
-  const bar = nextBar(st, intervalMs);
+  allowEntries = true,
+) {
+  const last = st.bars[st.bars.length - 1];
+  if (last && bar.t <= last.t) return;
   st.bars.push(bar);
-  const idx = st.bars.length - 1;
-
-  // day rollover — reset the discipline counters, arm fresh PDH/PDL
-  if (bar.day !== st.dayKey) {
-    if (st.dayKey >= 0) {
-      st.pdh = st.dayHigh;
-      st.pdl = st.dayLow;
-      st.ses = computeSessionLevels(st.bars, st.dayKey);
-      ev(st, bar.t, "SYS", "sys",
-        `Session day ${bar.day - st.startDay + 1} open · PDH ${fmtP(st.pdh)} / PDL ${fmtP(st.pdl)} armed`);
+  if (st.bars.length > 2400) st.bars.splice(0, st.bars.length - 2400);
+  updateCircuitBreakers(st, cfg, bar);
+  manageOpen(st, cfg, bar);
+  updateCircuitBreakers(st, cfg, bar);
+  for (const q of st.queue)
+    if (
+      q.status === "PENDING" &&
+      bar.t >= q.expiresAtTime &&
+      q.dispatchStatus !== "SENDING" &&
+      q.dispatchStatus !== "UNKNOWN"
+    ) {
+      q.status = "REJECTED";
+      q.reason = "Signal expired after three closed bars";
     }
-    st.dayKey = bar.day;
-    if (st.startDay < 0) st.startDay = bar.day;
-    st.dayOpen = bar.o;
-    st.dayHigh = -1e9;
-    st.dayLow = 1e9;
-    st.dailySL = 0;
-    st.dailyTradesCount = 0;
-    st.halted = false;
-  }
-
-  // 14-Period Wilder RMA ATR
-  const prevC = idx > 0 ? st.bars[idx - 1].c : bar.o;
-  const tr = Math.max(bar.h - bar.l, Math.abs(bar.h - prevC), Math.abs(bar.l - prevC));
-  st.atr = st.atr > 0 ? (st.atr * 13 + tr) / 14 : tr;
-
-  // 50-EMA & 200-EMA Trend Regime Filter
-  const k50 = 2 / (50 + 1);
-  const k200 = 2 / (200 + 1);
-  st.ema50 = idx === 0 ? bar.c : bar.c * k50 + st.ema50 * (1 - k50);
-  st.ema200 = idx === 0 ? bar.c : bar.c * k200 + st.ema200 * (1 - k200);
-
-  // Institutional Killzone Detection (UTC hours)
-  const barHour = hourOf(bar.t);
-  const barMin = Math.floor(((bar.t % DAY_MS) + DAY_MS) / 60000) % 60;
-  
-  if (barHour >= 13 && barHour < 17) {
-    st.activeKillzone = "NEW_YORK";
-  } else if (barHour >= 12 && barHour < 13) {
-    st.activeKillzone = "OVERLAP"; // London/NY overlap
-  } else if (barHour >= 7 && barHour < 12) {
-    st.activeKillzone = "LONDON";
-  } else {
-    st.activeKillzone = "OFF_SESSION";
-  }
-
-  // Range Breakout Tracker
-  if (cfg.rbEnabled) {
-    const totalMins = barHour * 60 + barMin;
-    const startMins = (cfg.rbStartH ?? 7) * 60 + (cfg.rbStartM ?? 0);
-    const endMins = (cfg.rbEndH ?? 10) * 60 + (cfg.rbEndM ?? 0);
-
-    if (totalMins >= startMins && totalMins < endMins) {
-      if (st.rbState === "WAITING" || st.rbState === "DONE" || !st.rbHigh || !st.rbLow) {
-        st.rbState = "FORMING";
-        st.rbHigh = bar.h;
-        st.rbLow = bar.l;
-      } else if (st.rbState === "FORMING") {
-        st.rbHigh = Math.max(st.rbHigh, bar.h);
-        st.rbLow = Math.min(st.rbLow, bar.l);
-      }
-    } else if (totalMins >= endMins && totalMins < endMins + 360) {
-      if (st.rbState === "FORMING" && st.rbHigh && st.rbLow) {
-        st.rbState = "ACTIVE";
-      }
-    } else if (totalMins >= 23 * 60 + 45 || totalMins < startMins) {
-      st.rbState = "WAITING";
-      st.rbHigh = null;
-      st.rbLow = null;
-    }
-  }
-
-  const cls = classify(bar, st.atr, cfg);
-  st.classes.push(cls);
-
-  // manage any open position with this bar's range (SL checked first — conservative)
-  manage(st, cfg, bar);
-
-  // Action Center maintenance — expire stale holds, score past rejections
-  maintainQueue(st, cfg, bar);
-
-  // capture pre-bar intraday extremes for CDH/CDL, then update
-  const cdhPrev = st.dayHigh;
-  const cdlPrev = st.dayLow;
-  st.dayHigh = Math.max(st.dayHigh, bar.h);
-  st.dayLow = Math.min(st.dayLow, bar.l);
-
-  buildAois(st, cfg, cdhPrev, cdlPrev);
-  evaluate(st, cfg, bar, cls);
-
-  // mark-to-market equity — marked through the spread (bid for longs, ask for shorts)
-  const half = cfg.spread / 2;
-  const unreal = st.open
-    ? st.open.oz * (st.open.side === "LONG" ? bar.c - half - st.open.entry : st.open.entry - (bar.c + half))
-    : 0;
-  st.equity.push(st.balance + unreal);
+  evaluate(st, cfg, !st.halted && allowEntries);
 }
 
-export function createEngine(seed: number, cfg: EngineConfig): EngineState {
-  const basePrice = cfg.activeSymbol?.startsWith("BTC")
-    ? 68500
-    : cfg.activeSymbol?.startsWith("ETH")
-      ? 3600
-      : cfg.activeSymbol?.startsWith("EUR")
-        ? 1.085
-        : 2750; // Accurate Gold base price
-
-  const st: EngineState = {
-    seed,
-    bars: [],
-    classes: [],
-    atr: 0,
-    atrPeriod: 14,
-    timeframeAtrs: {},
-    balance: cfg.account,
-    startDay: -1,
-    dayKey: -1,
-    dayOpen: basePrice,
-    dayHigh: -1e9,
-    dayLow: 1e9,
-    pdh: null,
-    pdl: null,
-    ses: null,
-    dailySL: 0,
-    dailyTradesCount: 0,
-    halted: false,
-    open: null,
-    trades: [],
-    queue: [],
-    missedTpUSD: 0,
-    avoidedSlUSD: 0,
-    equity: [],
-    aois: [],
-    events: [],
-    lastEval: {
-      cls: "NEUTRAL",
-      checks: [],
-      verdict: "Initialising engine…",
-    },
-    cooldown: {},
-    feedMode: "simulated",
-    activeSymbol: cfg.activeSymbol || "XAUUSD",
-    liveStatus: "disconnected",
-    liveLatency: 0,
-    liveLastBarTime: 0,
-    rng: mulberry32(seed),
-    regime: "RANGING_CHOP",
-    regimeBarsLeft: 12,
-    trend: 0,
-    nextT: BASE_T,
-    price: basePrice,
-    nextId: 1,
-    ema50: basePrice,
-    ema200: basePrice,
-    lastConfluenceScore: 0,
-    activeKillzone: "OFF_SESSION",
-    rbHigh: null,
-    rbLow: null,
-    rbState: "WAITING",
-    asianHigh: null,
-    asianLow: null,
-    asianTradedDay: -1,
-    dxyTrend: "NEUTRAL",
-    dxyValue: 104.5,
-    mtcAlignment: {
-      h4: "BULLISH",
-      m15: "AOI_TEST",
-      m5: "LPR",
-      aligned: true,
-      score: 85,
-    },
-    upcomingNews: null,
-  };
-
-  ev(st, BASE_T, "SYS", "sys", `Trading Flow online · ${cfg.activeSymbol} (${cfg.timeframe})`);
-  ev(st, BASE_T, "SYS", "aoi", `Simulator feed synchronized to market levels`);
-  // history replay runs unattended — the Action Center only supervises live bars
-  const warmCfg: EngineConfig = { ...cfg, actionCenter: false };
-  for (let k = 0; k < 120; k++) advance(st, warmCfg);
-  return st;
+export function advance(st: EngineState, cfg: EngineConfig) {
+  processClosedBar(st, cfg, nextSimBar(st, cfg));
+}
+export function feedLiveBar(
+  st: EngineState,
+  cfg: EngineConfig,
+  bar: Bar,
+  closed: boolean,
+  allowEntries = true,
+) {
+  if (closed) processClosedBar(st, cfg, bar, allowEntries);
+  else st.formingBar = { ...bar };
 }
 
-/**
- * Initialize engine with real historical bars from a live market provider
- */
-export function createLiveEngine(symbol: string, initialBars: Bar[], cfg: EngineConfig): EngineState {
-  const lastBar = initialBars[initialBars.length - 1];
-  const lastClose = lastBar ? lastBar.c : 2000;
+export function refreshTelemetry(st: EngineState, cfg: EngineConfig) {
+  evaluate(st, cfg, false);
+}
 
-  const st: EngineState = {
-    seed: 1337,
-    bars: [],
-    classes: [],
-    atr: 0,
-    atrPeriod: 14,
-    timeframeAtrs: {},
-    balance: cfg.account,
-    startDay: -1,
-    dayKey: -1,
-    dayOpen: initialBars[0]?.o || lastClose,
-    dayHigh: -1e9,
-    dayLow: 1e9,
-    pdh: null,
-    pdl: null,
-    ses: null,
-    dailySL: 0,
-    dailyTradesCount: 0,
-    halted: false,
-    open: null,
-    trades: [],
-    queue: [],
-    missedTpUSD: 0,
-    avoidedSlUSD: 0,
-    equity: [cfg.account],
-    aois: [],
-    events: [],
-    lastEval: {
-      cls: "NEUTRAL",
-      checks: [],
-      verdict: `Live feed connected · streaming ${symbol} 15m klines`,
-    },
-    cooldown: {},
-    feedMode: "live",
-    activeSymbol: symbol,
-    liveStatus: "connected",
-    liveLatency: 24,
-    liveLastBarTime: lastBar ? lastBar.t : Date.now(),
-    rng: mulberry32(1337),
-    regime: "RANGING_CHOP",
-    regimeBarsLeft: 12,
-    trend: 0,
-    nextT: Date.now(),
-    price: lastClose,
-    nextId: 1,
-    ema50: lastClose,
-    ema200: lastClose,
-    lastConfluenceScore: 0,
-    activeKillzone: "OFF_SESSION",
-    rbHigh: null,
-    rbLow: null,
-    rbState: "WAITING",
-    asianHigh: null,
-    asianLow: null,
-    asianTradedDay: -1,
-    dxyTrend: "NEUTRAL",
-    dxyValue: 104.5,
-    mtcAlignment: {
-      h4: "BULLISH",
-      m15: "AOI_TEST",
-      m5: "LPR",
-      aligned: true,
-      score: 85,
-    },
-    upcomingNews: null,
-  };
+export function approvalBlock(
+  st: EngineState,
+  cfg: EngineConfig,
+  q: QueueItem,
+): string {
+  if (
+    q.status !== "PENDING" ||
+    q.dispatchStatus === "SENDING" ||
+    q.dispatchStatus === "UNKNOWN"
+  )
+    return "Signal is not available for approval";
+  const bar = st.bars[st.bars.length - 1];
+  if (
+    !bar ||
+    bar.t >= q.expiresAtTime ||
+    (cfg.feedMode === "mt5" && Date.now() >= q.expiresAtTime)
+  )
+    return "Signal expired";
+  if (q.source !== cfg.feedMode) return "Signal/feed mode mismatch";
+  const risk = calculateRisk(st, cfg);
+  const blocked = safetyBlock(st, cfg, bar, risk, true);
+  if (blocked) return blocked;
+  if (q.risk > risk.riskBudget + 1e-8 || q.brokerLots > risk.lots + 1e-8)
+    return "Risk settings changed — wait for a new signal";
+  const mark = st.formingBar?.c ?? bar.c;
+  if (
+    (q.side === "LONG" && (mark <= q.sl || mark >= q.tp)) ||
+    (q.side === "SHORT" && (mark >= q.sl || mark <= q.tp))
+  )
+    return "Price has passed a protective level";
+  return "";
+}
 
-  ev(st, Date.now(), "SYS", "sys", `⚡ LIVE MARKET FEED ATTACHED: ${symbol}`);
-  ev(st, Date.now(), "SYS", "aoi", `Loaded ${initialBars.length} real historical 15m bars`);
-
-  // Warm up the live engine across the real historical bars
-  const warmCfg: EngineConfig = { ...cfg, actionCenter: false };
-  for (let i = 0; i < initialBars.length; i++) {
-    const b = initialBars[i];
-    st.bars.push(b);
-    const idx = st.bars.length - 1;
-
-    if (b.day !== st.dayKey) {
-      if (st.dayKey >= 0) {
-        st.pdh = st.dayHigh;
-        st.pdl = st.dayLow;
-        st.ses = computeSessionLevels(st.bars, st.dayKey);
-      }
-      st.dayKey = b.day;
-      if (st.startDay < 0) st.startDay = b.day;
-      st.dayOpen = b.o;
-      st.dayHigh = -1e9;
-      st.dayLow = 1e9;
-      st.dailySL = 0;
-      st.halted = false;
-    }
-
-    const prevC = idx > 0 ? st.bars[idx - 1].c : b.o;
-    const tr = Math.max(b.h - b.l, Math.abs(b.h - prevC), Math.abs(b.l - prevC));
-    st.atr = st.atr > 0 ? (st.atr * 13 + tr) / 14 : tr;
-
-    const cls = classify(b, st.atr, warmCfg);
-    st.classes.push(cls);
-
-    const cdhPrev = st.dayHigh;
-    const cdlPrev = st.dayLow;
-    st.dayHigh = Math.max(st.dayHigh, b.h);
-    st.dayLow = Math.min(st.dayLow, b.l);
-
-    buildAois(st, warmCfg, cdhPrev, cdlPrev);
+export function decideQueue(
+  st: EngineState,
+  id: number,
+  approve: boolean,
+  cfg: EngineConfig,
+): Trade | null {
+  const q = st.queue.find(
+    (item) => item.id === id && item.status === "PENDING",
+  );
+  if (!q) return null;
+  if (q.dispatchStatus === "SENDING" || q.dispatchStatus === "UNKNOWN")
+    return null;
+  if (!approve) {
+    q.status = "REJECTED";
+    q.reason = "Rejected by operator";
+    return null;
   }
-
-  return st;
-}
-
-/**
- * Handle incoming live tick or closed 15m candle
- */
-export function feedLiveBar(st: EngineState, cfg: EngineConfig, bar: Bar, isClosed: boolean) {
-  st.price = bar.c;
-  st.liveLastBarTime = bar.t;
-
-  if (isClosed) {
-    // Bar finalized - push and advance engine cycle
-    const lastBar = st.bars[st.bars.length - 1];
-    if (lastBar && lastBar.t === bar.t) {
-      st.bars[st.bars.length - 1] = bar;
-    } else {
-      st.bars.push(bar);
-    }
-    const idx = st.bars.length - 1;
-
-    // Day rollover check
-    if (bar.day !== st.dayKey) {
-      if (st.dayKey >= 0) {
-        st.pdh = st.dayHigh;
-        st.pdl = st.dayLow;
-        st.ses = computeSessionLevels(st.bars, st.dayKey);
-        ev(st, bar.t, "SYS", "sys", `New trading day · Armed PDH ${fmtP(st.pdh)} / PDL ${fmtP(st.pdl)}`);
-      }
-      st.dayKey = bar.day;
-      if (st.startDay < 0) st.startDay = bar.day;
-      st.dayOpen = bar.o;
-      st.dayHigh = -1e9;
-      st.dayLow = 1e9;
-      st.dailySL = 0;
-      st.halted = false;
-    }
-
-    const prevC = idx > 0 ? st.bars[idx - 1].c : bar.o;
-    const tr = Math.max(bar.h - bar.l, Math.abs(bar.h - prevC), Math.abs(bar.l - prevC));
-    st.atr = st.atr > 0 ? st.atr * 0.92 + tr * 0.08 : tr;
-
-    const cls = classify(bar, st.atr, cfg);
-    st.classes.push(cls);
-
-    manage(st, cfg, bar);
-    maintainQueue(st, cfg, bar);
-
-    const cdhPrev = st.dayHigh;
-    const cdlPrev = st.dayLow;
-    st.dayHigh = Math.max(st.dayHigh, bar.h);
-    st.dayLow = Math.min(st.dayLow, bar.l);
-
-    buildAois(st, cfg, cdhPrev, cdlPrev);
-    evaluate(st, cfg, bar, cls);
-
-    const half = cfg.spread / 2;
-    const unreal = st.open
-      ? st.open.oz * (st.open.side === "LONG" ? bar.c - half - st.open.entry : st.open.entry - (bar.c + half))
-      : 0;
-    st.equity.push(st.balance + unreal);
-  } else {
-    // In-flight tick update for the forming candle
-    if (st.bars.length === 0) {
-      st.bars.push({ ...bar });
-    } else {
-      const last = st.bars[st.bars.length - 1];
-      if (last.t === bar.t) {
-        st.bars[st.bars.length - 1] = {
-          ...last,
-          h: Math.max(last.h, bar.h),
-          l: Math.min(last.l, bar.l),
-          c: bar.c,
-          v: bar.v,
-        };
-      } else {
-        st.bars.push({ ...bar });
-      }
-    }
-
-    // Real-time mark to market and intra-candle SL/TP hit checking
-    if (st.open) {
-      manage(st, cfg, bar);
-      const half = cfg.spread / 2;
-      const unreal = st.open
-        ? st.open.oz * (st.open.side === "LONG" ? bar.c - half - st.open.entry : st.open.entry - (bar.c + half))
-        : 0;
-      if (st.equity.length > 0) {
-        st.equity[st.equity.length - 1] = st.balance + unreal;
-      }
-    }
+  const reason = approvalBlock(st, cfg, q);
+  // Only broker receipts may open an MT5 position. Never simulate a broker fill.
+  if (reason || cfg.feedMode === "mt5") {
+    q.reason = reason || "Broker acknowledgement required";
+    return null;
   }
+  q.status = "APPROVED";
+  const trade: Trade = { ...q, open: true };
+  openTrade(st, trade, Date.now());
+  return trade;
 }
 
-/* ------------------------------------------------------------------ */
-/*  Stats                                                              */
-/* ------------------------------------------------------------------ */
-export interface Stats {
-  closed: Trade[];
-  wins: number;
-  losses: number;
-  winRate: number;
-  net: number;
-  netPnl: number;
-  totalTrades: number;
-  grossWin: number;
-  grossLoss: number;
-  pf: number;
-  avgR: number;
-  bestR: number;
-  worstR: number;
-  maxDD: number;
-  maxDDPct: number;
-  equityNow: number;
-  openPnl: number;
-}
-
-export function computeStats(st: EngineState, cfg: EngineConfig): Stats {
-  const closed = st.trades.filter((t) => !t.open);
-  const wins = closed.filter((t) => (t.pnl ?? 0) > 0).length;
-  const losses = closed.length - wins;
-  const net = closed.reduce((s, t) => s + (t.pnl ?? 0), 0);
-  const grossWin = closed.filter((t) => (t.pnl ?? 0) > 0).reduce((s, t) => s + (t.pnl ?? 0), 0);
-  const grossLoss = Math.abs(closed.filter((t) => (t.pnl ?? 0) <= 0).reduce((s, t) => s + (t.pnl ?? 0), 0));
-  const rs = closed.map((t) => t.r ?? 0);
-  let peak = -1e18, maxDD = 0;
-  for (const e of st.equity) {
-    peak = Math.max(peak, e);
-    maxDD = Math.max(maxDD, peak - e);
-  }
-  const half = cfg.spread / 2;
-  const lastC = st.bars[st.bars.length - 1].c;
-  const openPnl = st.open
-    ? st.open.oz * (st.open.side === "LONG" ? lastC - half - st.open.entry : st.open.entry - (lastC + half))
-    : 0;
+export function computeStats(st: EngineState): EngineStats {
+  const closed = st.trades.filter((t) => !t.open),
+    wins = closed.filter((t) => (t.pnl ?? 0) > 0),
+    losses = closed.filter((t) => (t.pnl ?? 0) < 0);
+  const grossWin = wins.reduce((sum, t) => sum + (t.pnl ?? 0), 0),
+    grossLoss = Math.abs(losses.reduce((sum, t) => sum + (t.pnl ?? 0), 0)),
+    netPnl = closed.reduce((sum, t) => sum + (t.pnl ?? 0), 0);
   return {
-    closed,
-    wins,
-    losses,
-    winRate: closed.length ? (wins / closed.length) * 100 : 0,
-    net,
-    netPnl: net,
-    totalTrades: closed.length,
-    grossWin,
-    grossLoss,
-    pf: grossLoss > 0 ? grossWin / grossLoss : grossWin > 0 ? 99 : 0,
-    avgR: rs.length ? rs.reduce((a, b) => a + b, 0) / rs.length : 0,
-    bestR: rs.length ? Math.max(...rs) : 0,
-    worstR: rs.length ? Math.min(...rs) : 0,
-    maxDD,
-    maxDDPct: st.equity.length ? (maxDD / Math.max(1, peak)) * 100 : 0,
-    equityNow: st.equity.length ? st.equity[st.equity.length - 1] : st.balance,
-    openPnl,
+    closed: closed.length,
+    wins: wins.length,
+    losses: losses.length,
+    winRate: closed.length ? (wins.length / closed.length) * 100 : 0,
+    netPnl,
+    profitFactor: grossLoss
+      ? grossWin / grossLoss
+      : grossWin > 0
+        ? Infinity
+        : 0,
+    expectancy: closed.length ? netPnl / closed.length : 0,
   };
 }
 
-export { BAR_MS };
+export function simulationSpec(
+  symbol: string,
+  balance: number,
+): BrokerSymbolSpec {
+  const meta =
+    SUPPORTED_SYMBOLS.find((x) => x.symbol === symbol) ?? SUPPORTED_SYMBOLS[0];
+  return {
+    ...DEFAULT_SIM_SPEC,
+    symbol: meta.symbol,
+    digits: meta.digits,
+    point: meta.point,
+    tickSize: meta.point,
+    tickValue: meta.point * meta.contractSize,
+    lossPerLot100Points: 100 * meta.point * meta.contractSize,
+    marginPerMinLot:
+      ((symbol === "XAUUSD" ? 2650 : symbol === "XAGUSD" ? 30 : 1.08) *
+        meta.contractSize *
+        0.01) /
+      100,
+    contractSize: meta.contractSize,
+    spreadPoints: meta.spread / meta.point,
+    balance,
+    equity: balance,
+    freeMargin: balance,
+    checkedAt: Date.now(),
+  };
+}

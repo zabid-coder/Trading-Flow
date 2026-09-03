@@ -1,155 +1,123 @@
-# 🏆 Trading Flow PRO — Institutional Gold (XAUUSD) Algorithmic Platform
+# Safe Scalper Control
 
-<div align="center">
+A single-strategy XAUUSD M5 research, paper-trading and MT5 monitoring app. It is an adaptation of the public [ASQ Safe Scalping v1.20 CodeBase](https://www.mql5.com/en/code/71189), not a verified clone of the current [SafeScalperPro Market release](https://www.mql5.com/en/market/product/165581). The bundled publisher source/presets are preserved unchanged.
 
-![Trading Flow Banner](https://img.shields.io/badge/Trading%20Flow-v4.2.0%20PRO%20Institutional-gold?style=for-the-badge&logo=probot)
-![XAUUSD Gold](https://img.shields.io/badge/Instrument-XAUUSD%20Gold%20Spot-yellow?style=for-the-badge&logo=gold)
-![React 19](https://img.shields.io/badge/React-19.0-61dafb?style=for-the-badge&logo=react)
-![TypeScript](https://img.shields.io/badge/TypeScript-5.8-3178c6?style=for-the-badge&logo=typescript)
-![FastAPI](https://img.shields.io/badge/FastAPI-0.141+-009688?style=for-the-badge&logo=fastapi)
-![MetaTrader 5](https://img.shields.io/badge/MetaTrader-5%20Bridge-22c55e?style=for-the-badge)
+**Real-account execution is blocked.** There is no live-enable switch. Broker demo entries and host-managed exits require explicit host opt-in. The native lifecycle is implemented and fake-broker tested, not yet terminal-certified. Build/test success is not evidence of profitability.
 
-<p align="center">
-  <b>A High-Expectancy Institutional Algorithmic & Discretionary Trading Platform for Gold (XAUUSD)</b><br>
-  Built on the <b>Chris Creamer 4-Layer Institutional Framework (Environment ➔ Location ➔ Confirmation ➔ Execution)</b>, <b>Asian Liquidity Sweeps</b>, <b>Dynamic 50-EMA Trend Pullbacks</b>, <b>Anti-Blowout Dynamic Sizing</b>, and <b>Direct MetaTrader 5 Bridge Execution</b>.
-</p>
+## What works
 
-[✨ Live Web Dashboard](http://localhost:3000/) • [🔌 FastAPI MT5 Bridge](http://127.0.0.1:8000/health)
+- Seven completed-candle gates: EMA direction, ATR separation, price position, buffered breakout, RSI zone, momentum, completed-H1 agreement.
+- The bundled breakout formula is used: long close > previous N-bar high − ATR buffer and previous close ≤ that high; symmetric low + buffer for shorts.
+- Frontend and server use the same JSON defaults and a bounded 900-M5-bar indicator window. A cross-runtime test verifies EMA/ATR/RSI/H1 values on an identical fixture. Historical research uses continuous indicator history; exact MetaEditor seeding remains unverified.
+- Timestamp-based candle deduplication and 3-bar signal expiry; forming candles never replace completed history.
+- Default 0.5% equity risk, 1.5% daily loss, 5% peak drawdown, two trades/day, 25% margin cap. Minimum volume is never rounded upward.
+- Broker-native account-currency loss/margin calculations, commission reserve, configured deviation reserve, volume/tick-size/stop constraints, free margin and OrderCheck retcode validation.
+- Missing/stale/invalid news heartbeat, unavailable account history and stale quote block demo orders on the server.
+- SQLite account-keyed daily/drawdown latches survive refresh/restart. One account position/order at a time, including other EAs/manual orders.
+- Durable signal reservation before order_send, payload fingerprint and cached full receipt. Exactly one send attempt. Timeout/partial/placed/ambiguous outcomes remain quarantined; no blind retry.
+- Broker positions, today's account-wide deals, balance/equity and risk state come from MT5 snapshots. Browser candles never invent broker fills, exits or P/L.
+- A host worker manages verified app-owned demo positions: monotonic breakeven/trailing SL updates, preserved TP and one-shot partial closes. Minimum/step-invalid partials are skipped. Ambiguous management results are durably quarantined.
+- System tab shows worker readiness, tracked positions, management history and authenticated operator recovery. Review requires exact account confirmation and a reason; conclusive broker evidence is required before clearing an unknown result.
+- Separate persistent paper journal, paper session/risk latch and bounded saved preferences. Old journal keys are retained but excluded from new statistics.
+- Session-only credentials. No new bearer/Telegram tokens are persisted; saving broker settings clears the old fixed-XOR token fields. Fixed-XOR obfuscation was not encryption.
+- No generic execution webhooks or full-auto broker option. Telegram is notification-only, after a confirmed demo receipt.
 
-</div>
+Paper breakeven/trailing/partial exits are simulated with conservative stop-first bars. Demo advanced exits run every second on the bridge host using live broker quotes, stable position identifiers and the immutable entry-time JSON policy. Browser risk/exit edits do not alter an existing broker position's policy. Only exact receipt/order/comment/magic ownership is adopted; manual trades and other EAs are not managed.
 
----
+The host and terminal must stay running for advanced exits. Browser pause, closing the tab or switching to paper mode **does not stop the host worker**. A stopped/unhealthy worker blocks new entries; existing broker-held SL/TP remain in place but advanced management pauses. Do not run with `--reload` or multiple independent bridge installations. A dedicated demo account is required; external account/position changes cannot be atomically locked by this service.
 
-## 🏛️ The 4-Layer Institutional Architecture (Chris Creamer Framework)
+Breakeven is a price-based rule, not a guarantee of net break-even after commission, gaps or slippage. The default very small two-digit-gold distances need actual broker/tick validation.
 
-Trading Flow replaces traditional noisy retail indicators with a 4-gate sequential institutional pipeline. A trade is only executed when **all 4 layers pass**:
+## Local app
 
-```
-[ Layer 1: Environment ] ──(Passed)──► [ Layer 2: Location ] ──(Passed)──► [ Layer 3: Confirmation ] ──(Passed)──► [ Layer 4: Execution ]
-• VIX / Synthetic GEX                   • 0.705 OTE Entry                   • Bar Delta (Buy vs Sell)               • 1.0 - 1.5 ATR Stop
-• 3x HH/HL (Value Up)                   • 0.788 Golden Pocket               • Passive Buyer Absorption              • 1:2.5R Minimum Target
-• 3x LL/LH (Value Down)                 • 0.886 Deep Discount               • Passive Seller Absorption             • Auto-Pilot / 1-Click
-```
+Install Node dependencies and Python dependencies (Python is also used by the parity test):
 
-### 1. 🌐 Layer 1: Environment (GEX Volatility Regime & Value Trend)
-- **Synthetic GEX (Gamma Exposure)**: Computed from Implied Volatility ($IV = \frac{ATR}{Price} \times 100 \times \sqrt{252}$) and Put/Call Ratio (PCR):
-  - **`POSITIVE_GAMMA`** ($PCR \ge 1.15$, Low IV): Market is pinned and range-bound. False breakouts and mean-reversion reversals are favored.
-  - **`NEGATIVE_GAMMA`** ($PCR \le 0.85$, High IV): Market is volatile. Directional trend expansion and runners are favored.
-- **Value Regime**:
-  - `VALUE_UP`: 3 consecutive Higher Highs & Higher Lows.
-  - `VALUE_DOWN`: 3 consecutive Lower Lows & Lower Highs.
-  - `BALANCE_RANGE`: Price trapped inside session high/low.
+~~~bash
+npm ci
+python3 -m pip install -r requirements.txt
+npm run dev
+~~~
 
-### 2. 🎯 Layer 2: Location (Institutional Fibonacci OTE Kill Zones)
-- Automated calculation of session and 4H swing extremes:
-  - **Level 0.705**: Optimal Trade Entry (OTE Trigger)
-  - **Level 0.788**: Institutional Golden Pocket Sweet Spot
-  - **Level 0.886**: Deep Discount / Premium Extreme
-- **Discount Zone (Buy)**: $Price \in [Level_{886}, Level_{705}]$ (Prime Institutional Buying Area).
-- **Premium Zone (Sell)**: $Price \in [Level_{705}, Level_{886}]$ (Prime Institutional Selling Area).
+Default URL: http://127.0.0.1:3000. The development server binds loopback only.
+The initial mode is paper simulation. Switching to MT5 does not enable execution.
 
-### 3. ⚡ Layer 3: Confirmation (Order Flow Delta & Trapped Traders Absorption)
-- **Bar Delta**: Real-time candle buy volume vs sell volume: $\Delta = Volume \times \frac{Close - Open}{High - Low}$.
-- **Trapped Sellers (Passive Buyer Absorption)**: Large negative delta ($\Delta < -120$) or $2\times$ volume spike with lower wick $\ge 45\%$ of candle range $\rightarrow$ **Institutional limit buyers absorbed all aggressive sellers (BUY SIGNAL)**.
-- **Trapped Buyers (Passive Seller Absorption)**: Large positive delta ($\Delta > +120$) or $2\times$ volume spike with upper wick $\ge 45\%$ of candle range $\rightarrow$ **Institutional limit sellers absorbed all aggressive buyers (SELL SIGNAL)**.
+## Windows MT5 bridge — monitoring first
 
-### 4. 🚀 Layer 4: Execution & Precision Trailing
-- Trades execute with institutional 1.0–1.5 ATR breathing room stop-loss and **1:2.5R target geometry**.
-- Automated breakeven lock at $+1.2R$ and dynamic ATR trailing stop at $+1.5R$.
+Run beside the logged-in MetaTrader 5 terminal. In PowerShell:
 
----
+~~~powershell
+python -m pip install -r requirements.txt
+$env:TF_WEBHOOK_SECRET = "<your-long-random-token>"
+python -m uvicorn fastapi_mt5_bridge:app --host 127.0.0.1 --port 8000
+~~~
 
-## ⚡ The 5 Active Institutional Trading Strategies
+Copy the token into **Broker settings** (re-enter after reload), test the bridge, then connect MT5. Never post the token in chat or commit it. If the app runs on a different computer, localhost is not the Windows host: configure an authenticated HTTPS endpoint/tunnel and an exact trusted CORS origin. Do not publicly expose an unauthenticated bridge.
 
-| # | Strategy Name | Type | Key Rules & Triggers | Win Rate | Target R:R |
-|---|---|---|---|:---:|:---:|
-| **1** | **Chris Creamer 4-Layer OTE Engine** | `Order Flow` | All 4 layers aligned (Environment GEX + 0.705-0.886 Fib OTE + Delta Absorption + Pin Bar). | **72% – 78%** | **1:2.5 – 1:3.5** |
-| **2** | **Asian Liquidity Sweep (Gold Special)** | `Liquidity Hunt` | London Open sweeps 00:00–07:00 GMT Asian High/Low, grabs stop losses, and snaps back inside. | **70% – 76%** | **1:2.5 – 1:3.0** |
-| **3** | **50/200 EMA Trend Pullback** | `Trend Following` | 4H Trend alignment (`EMA50 > EMA200`) with shallow pullbacks to 50-EMA and Pin Bar (`LPR/HPR`) confirmation. | **65% – 72%** | **1:2.0 – 1:2.5** |
-| **4** | **14-Period RSI Exhaustion** | `Mean Reversion` | Fades extreme panic oversold ($RSI \le 28$) or greed overbought ($RSI \ge 72$) spikes at swing extremes. | **64% – 70%** | **1:2.0 – 1:2.5** |
-| **5** | **Session Range Breakout EA** | `Volatility Momentum` | Automated breakout expansion beyond pre-market range with a 20-point noise filter. | **60% – 66%** | **1:2.0 – 1:3.0** |
+On macOS/Linux without the MetaTrader5 package, the bridge reports **MOCK** and only serves synthetic inspection data. It cannot place orders.
 
----
+Compile/attach only the companion [TradingFlow_NewsGuard.mq5](mql5/SafeScalperPro/TradingFlow_NewsGuard.mq5) for the bridge's native calendar heartbeat. Use at least 30 minutes before / 15 after high-impact USD news. A failed metadata lookup, disconnected terminal, stopped EA or heartbeat older than 180 seconds blocks execution. The companion has not been compiled here.
 
-## 🛡️ Institutional Anti-Blowout Risk Management Engine
+Demo execution is deliberately off by default. For a dedicated broker demo account only, after reviewing the limitations, the operator may set TF_ENABLE_DEMO_ORDERS=1 and restart the bridge. The frontend remains supervised. This setting still cannot enable real-account orders. No demo order was sent while developing/testing this code.
 
-```
-[ Balance $1,000 ] ──► Risk: 1.5% ($15.00) ──► Lot Size = $15 / Stop Distance ($3.50) = 0.04 lots
-[ Balance $800 ]   ──► Risk: 1.5% ($12.00) ──► Lot Size = $12 / Stop Distance ($3.50) = 0.03 lots
-[ Balance $500 ]   ──► Risk: 1.5% ($7.50)  ──► Lot Size = $7.50 / Stop Distance ($3.50) = 0.02 lots
-```
+Do not run the publisher EA and this bridge as two execution owners on the same account. The bundled EA is separate, unmodified research material and does not inherit the bridge's safeguards.
 
-### 1. 📉 Dynamic 1.5% Percent Equity Sizing (Asymptotic Capital Decay)
-- Rather than risking a fixed dollar amount, risk is dynamically calculated as **1.5% of CURRENT balance**.
-- As equity declines, dollar risk automatically contracts, mathematically eliminating the possibility of account blowouts.
+## Endpoints
 
-### 2. ⚡ Anti-Streak Drawdown Throttling
-- If the engine encounters **2 consecutive stop-losses**, risk automatically cuts by **50% (0.75% risk per trade)** until the next winning trade confirms market regime alignment.
+All endpoints require Bearer auth and are rate limited.
 
-### 3. 🎯 Institutional Stop Breathing Room (1.0 – 1.5 ATR)
-- Gold stop losses are placed at least **$2.80 to $3.50 (1.0 - 1.5 ATR)** below structural swing levels.
-- Prevents normal spread wicks ($0.35) from prematurely choking trades.
+| Route | Purpose |
+|---|---|
+| GET /health | Source, authentication and execution lock |
+| GET /symbol-spec/{symbol} | Native contract/profit/margin probes and account identity |
+| GET /bars/{symbol} | Completed broker bars only (position 1 onward) |
+| GET /news-status | Fail-closed native calendar status |
+| GET /account-state | Broker positions/deals and persistent risk snapshot |
+| GET /lifecycle | Exit-worker heartbeat, tracked positions, unresolved requests/actions and review audit |
+| POST /operator/reconcile | Evidence-based ledger review; never calls order_send |
+| POST /webhook | Host-enabled, supervised demo submission only |
 
-### 4. 🧮 Asymmetric 1:2.5R Risk-to-Reward Geometry
-- With a 1:2.5R minimum target, the **break-even win rate is only 28.5%**.
-- 1 winner pays for 2.5 losers, ensuring steady upward equity growth even during challenging market periods.
+Use one bridge installation/database per trading account. SQLite serializes workers sharing the database; separate installations with separate databases cannot share reservations. Broker/manual activity outside this service cannot be atomically locked by SQLite.
 
----
+An UNKNOWN/SENDING reservation intentionally has no auto-expiry. Open **Broker System → Host exits & operator recovery**, inspect the matching terminal order/deals and select its review button. Entry and partial-close reviews require the **order ticket, not the deal ticket**. SLTP review checks the observed protective stop or conclusive closed-position history. Type the exact account ID and a review reason. Wrong/missing/non-final evidence remains blocked; in-flight submissions have a 30-second review guard. Review only updates the ledger and records an audit; it does not retry the trade. Successful reconciliation can allow the worker to resume protection.
 
-## 🚀 Beginner Quickstart Guide (3 Simple Steps)
+After a review timeout, keep the same form/payload and retry the same operation; its ID is idempotent. Do not erase the database, invent a fresh signal ID or remove the latch just to resume trading. Legacy reservations created without ownership evidence cannot be cleared automatically. Network failures before a server reservation exists and external/manual alterations require terminal investigation; absence from the ledger is not proof of rejection.
 
-### Step 1: Clone & Install Dependencies
-```bash
-git clone https://github.com/zabid-coder/Trading-Flow.git
-cd Trading-Flow
-npm install
-pip install fastapi uvicorn pydantic requests
-```
+The 5% drawdown latch requires operator review; price recovery does not silently rearm it. The UI permits review only after server verification of a flat account, no unresolved submissions and recovered drawdown below 70% of the configured limit (3.5% with the default). It preserves the peak and daily-loss latch; it cannot reset the risk budget. Daily loss resets at UTC day rollover; historical balance is reconstructed from broker deals. Cash transfers/account-currency changes need review before interpreting peak drawdown.
 
-### Step 2: Start the Web Dashboard & FastAPI MT5 Bridge
-```bash
-# Terminal 1: Start Frontend Web Dashboard (Port 3000)
-npm run dev -- --port 3000
+## Tests and research
 
-# Terminal 2: Start FastAPI MT5 Bridge Server (Port 8000)
-python3 -m uvicorn fastapi_mt5_bridge:app --host 0.0.0.0 --port 8000
-```
+~~~bash
+npm run typecheck
+npm run build
+npm test
+npm run test:bridge
+python3 -m py_compile fastapi_mt5_bridge.py broker_lifecycle.py gold_strategy_core.py advanced_backtest_engine.py run_backtest.py
+python3 run_backtest.py
+~~~
 
-### Step 3: Open in Browser
-- Navigate to **[http://localhost:3000/](http://localhost:3000/)**
-- **⚡ AUTO PILOT Mode**: Toggle `⚡ AUTO` on top header to allow direct execution to your MetaTrader 5 broker.
-- **🎯 MANUAL Mode**: Toggle `🎯 MANUAL` to review and approve signals in the Action Center queue.
+The tests use fake brokers and temporary SQLite databases, never a terminal account.
+Python tests isolate submission transport from the independent indicator tests; they do not certify real MT5 order execution.
+For isolated UI checks, run the dev server and open `/tests/lifecycle-preview.html`. Its fetch handler is entirely in-memory, blocks all actual network calls and uses clearly labeled fictitious evidence. This fixture is not part of the production entry/build.
 
----
+The default audit uses synthetic bars and clearly reports NOT LIVE VALIDATED.
+Reports include a configuration hash and a machine-readable validation manifest.
 
-## 📁 Repository Structure
+To analyze exported broker M5 data:
 
-```
-Trading-Flow/
-├── src/
-│   ├── components/
-│   │   ├── DashboardLayout.tsx       # Master 3-Column Dark Glass Bento Grid
-│   │   ├── TrappedTradersRadar.tsx   # Chris Creamer 4-Layer Live Telemetry Radar
-│   │   ├── CommandCenter.tsx         # Smart Order Panel & Risk Gauges
-│   │   ├── MarketVision.tsx          # Candlestick Chart & Confluence Visualizer
-│   │   ├── BrainPanel.tsx            # Market Regime Detector & AI Journal
-│   │   ├── GlobalSidebar.tsx         # Unified Institutional Left Sidebar
-│   │   ├── HeaderBar.tsx             # Top Navigation & AUTO/MANUAL Switch
-│   │   └── StrategiesConfigView.tsx  # Strategy Lab & Configuration Desk
-│   ├── engine/
-│   │   ├── creamerEngine.ts          # Chris Creamer 4-Layer Mathematical Core
-│   │   ├── engine.ts                 # Main Trading State Machine & Risk Engine
-│   │   ├── brokerDispatch.ts         # FastAPI MT5 Webhook Order Dispatcher
-│   │   └── types.ts                  # TypeScript Interfaces & Strategy Definitions
-│   ├── App.tsx                       # Main Application Root & Simulation Loop
-│   └── index.css                     # Void Black (#050505) Glassmorphism Theme
-├── fastapi_mt5_bridge.py             # Secure MetaTrader 5 REST API Gateway
-├── advanced_backtest_engine.py       # Python Walk-Forward Optimization Engine
-└── README.md                         # Platform Documentation
-```
+~~~bash
+python3 run_backtest.py --csv /path/to/broker-m5.csv --broker-utc-offset-hours 3
+~~~
 
----
+Accepted formats: numeric UTC Unix timestamp/open/high/low/close/volume CSV, or MT5 tab-separated DATE/TIME/OPEN/HIGH/LOW/CLOSE/TICKVOL/SPREAD export. Naive server-time exports require an explicit offset. Normalize periods crossing DST to UTC before import. Spread is in broker points; if absent, the configured model is used.
 
-<div align="center">
-  <b>Trading Flow PRO — Institutional Precision. Zero Fluff. Maximum Mathematical Edge.</b>
-</div>
+CSV OHLCV is still not real ticks. Historical news, actual fill sequence, swaps, dynamic commission and slippage are not fully reproduced. Fixed-parameter non-overlapping window diagnostics are not optimization and cannot authorize live trading.
+
+## Remaining release gates
+
+1. Compile the NewsGuard in Windows MetaEditor; verify UTC/calendar behavior on the actual terminal.
+2. Import the user's broker data and run Strategy Tester with broker-specific real ticks/costs. Compare publisher EA signals with this adaptation.
+3. Validate the implemented host exits against actual terminal behavior: broker comment/identifier mapping, SLTP acknowledgements, FOK/IOC partials, freezes, stop rounding and restart/reconciliation recovery. Code-level fake-broker coverage does not establish publisher parity.
+4. Demo forward test fills, stops, restart/disconnect handling and small-account minimum-lot constraints.
+5. Review the strategy's evidence and risk policy before any separately authorized live implementation.
+
+The current synthetic audit is weak and is not a reason to deploy real capital.
